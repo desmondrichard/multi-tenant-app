@@ -1,0 +1,54 @@
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ProjectController struct {
+	Repo *repositories.ProjectRepo
+}
+
+func (p *ProjectController) Create(c *gin.Context) {
+	var in struct {
+		Name        string `json:"name" validate:"required,min=2"`
+		Key         string `json:"key" validate:"required,min=2,max=8"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+
+	proj := &models.Project{
+		OrganizationID: orgID,
+		Name:           in.Name,
+		Key:            in.Key,
+		Description:    in.Description,
+		CreatedBy:      userID,
+	}
+
+	if err := p.Repo.Create(c.Request.Context(), proj); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, proj)
+}
+
+func (p *ProjectController) List(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+
+	projects, err := p.Repo.List(c.Request.Context(), orgID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, projects)
+}
