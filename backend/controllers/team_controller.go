@@ -32,7 +32,7 @@ func (t *TeamController) ListMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// Invite generates a token and sends an email via Brevo API
+// Invite generates a token and sends an email via Brevo HTTP API
 func (t *TeamController) Invite(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	var in struct {
