@@ -69,8 +69,11 @@ func (c *CommentController) Create(ctx *gin.Context) {
 	}
 
 	// 3. Broadcast to WebSocket clients in the same Org
+	// 3. Broadcast to WebSocket clients in the same Org (Run in background)
 	broadcastMsg := fmt.Sprintf(`{"type":"NEW_COMMENT","orgId":"%s","taskId":"%s"}`, orgID.Hex(), taskID.Hex())
-	ws.GlobalHub.Broadcast <- []byte(broadcastMsg)
+	go func() {
+		ws.GlobalHub.Broadcast <- []byte(broadcastMsg)
+	}()
 
 	// 4. Send the final HTTP response ONLY ONCE
 	ctx.JSON(http.StatusCreated, comment)

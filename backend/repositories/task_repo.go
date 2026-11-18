@@ -124,12 +124,30 @@ func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.O
 func (r *TaskRepo) AddSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtask models.Subtask) error {
 	filter := bson.M{"_id": taskID, "organizationId": orgID}
 
-	// The magic fix: Use $push. MongoDB automatically handles creating the array
-	// if it doesn't exist, BUT if it's explicitly "null", it fails.
-	// To bypass this, we can use a pipeline update or just fix the existing data.
-	// For simplicity, let's use standard $push, and then fix the DB.
-	update := bson.M{
-		"$push": bson.M{"subtasks": subtask},
+	// If subtasks is null or doesn't exist, $push will fail.
+	// We use an aggregation pipeline to check and initialize the array first.
+	update := bson.A{
+		bson.M{
+			"$set": bson.M{
+				"subtasks": bson.M{
+					"$cond": bson.M{
+						"if":   bson.M{"$isArray": "$subtasks"},
+						"then": "$subtasks",
+						"else": bson.A{},
+					},
+				},
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"subtasks": bson.M{
+					"$concatArrays": []interface{}{
+						"$subtasks",
+						bson.A{subtask},
+					},
+				},
+			},
+		},
 	}
 
 	_, err := r.coll().UpdateOne(ctx, filter, update)
