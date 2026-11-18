@@ -1,11 +1,13 @@
 package controllers
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/smtp"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +32,7 @@ func (t *TeamController) ListMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// Invite generates a token and sends an email via Gmail SMTP
+// Invite generates a token and sends an email via Brevo API
 func (t *TeamController) Invite(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	var in struct {
@@ -60,39 +62,62 @@ func (t *TeamController) Invite(c *gin.Context) {
 		return
 	}
 
-	// 3. Send Email via Gmail SMTP
-	from := os.Getenv("SMTP_EMAIL")
-	password := os.Getenv("SMTP_PASSWORD")
+	// 3. Send Email via Brevo HTTP API
+	apiKey := os.Getenv("BREVO_API_KEY")
+	if apiKey == "" {
+		fmt.Println("❌ BREVO_API_KEY is missing in .env")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Email service not configured"})
+		return
+	}
 
-	smtpHost := "smtp.gmail.com"
-	smtpPort := "587"
+	// Use the frontend URL from environment variable (fallback to localhost)
+	frontendURL := os.Getenv("CLIENT_ORIGIN")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:5173"
+	}
+	inviteLink := fmt.Sprintf("%s/accept-invite?token=%s", frontendURL, token)
 
-	inviteLink := fmt.Sprintf("http://localhost:5173/accept-invite?token=%s", token)
-
-	subject := "Subject: Invitation to join TaskFlow\n"
-	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
-	body := fmt.Sprintf(`
-		<div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-			<h2 style="color: #1e293b;">You've been invited to TaskFlow!</h2>
-			<p style="color: #475569;">You have been invited to join the workspace as a <strong>%s</strong>.</p>
-			<p style="color: #475569;">Click the button below to create your account and join the team.</p>
-			<div style="text-align: center; margin: 30px 0;">
-				<a href="%s" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Accept Invitation</a>
+	// Brevo API payload
+	payload := map[string]interface{}{
+		"sender": map[string]string{
+			"name":  "TaskFlow",
+			"email": os.Getenv("SMTP_EMAIL"), // Your verified email in Brevo
+		},
+		"to": []map[string]string{
+			{"email": in.Email},
+		},
+		"subject": "Invitation to join TaskFlow",
+		"htmlContent": fmt.Sprintf(`
+			<div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+				<h2 style="color: #1e293b;">You've been invited to TaskFlow!</h2>
+				<p style="color: #475569;">You have been invited to join the workspace as a <strong>%s</strong>.</p>
+				<p style="color: #475569;">Click the button below to create your account and join the team.</p>
+				<div style="text-align: center; margin: 30px 0;">
+					<a href="%s" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Accept Invitation</a>
+				</div>
+				<p style="margin-top: 20px; font-size: 12px; color: #94a3b8;">Or copy and paste this link: <br/> %s</p>
 			</div>
-			<p style="margin-top: 20px; font-size: 12px; color: #94a3b8;">Or copy and paste this link: <br/> %s</p>
-		</div>
-	`, in.Role, inviteLink, inviteLink)
+		`, in.Role, inviteLink, inviteLink),
+	}
 
-	msg := []byte(subject + mime + body)
+	jsonPayload, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", "https://api.brevo.com/v3/smtp/email", bytes.NewBuffer(jsonPayload))
+	req.Header.Set("api-key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
 
-	// Authenticate with Gmail
-	auth := smtp.PlainAuth("", from, password, smtpHost)
-
-	// Send the email
-	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{in.Email}, msg)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("❌ Failed to send email:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send. Check server logs."})
+		fmt.Println("❌ Failed to reach Brevo API:", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Println("❌ Brevo API Error:", string(body))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
 		return
 	}
 
