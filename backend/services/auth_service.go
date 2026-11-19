@@ -10,7 +10,6 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -58,20 +57,25 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 		return "", nil, err
 	}
 
-	// 3) Create owner user
+	// 3) Create owner user with Membership array
 	user := &models.User{
-		OrganizationID: org.ID,
-		Name:           in.Name,
-		Email:          strings.ToLower(in.Email),
-		PasswordHash:   hash,
-		Role:           models.RoleOwner,
+		Name:         in.Name,
+		Email:        strings.ToLower(in.Email),
+		PasswordHash: hash,
+		Memberships: []models.Membership{
+			{
+				OrganizationID:   org.ID,
+				OrganizationName: org.Name,
+				Role:             models.RoleOwner,
+			},
+		},
 	}
 	if err := s.Users.Create(ctx, user); err != nil {
 		return "", nil, err
 	}
 
-	// 4) Generate Token with orgName
-	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), org.Name, user.Role)
+	// 4) Generate Token with the first membership
+	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), org.Name, models.RoleOwner)
 	return token, user, err
 }
 
@@ -84,11 +88,15 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (string, *models
 		return "", nil, errors.New("invalid credentials")
 	}
 
-	// Fetch organization name for the token
-	var org models.Organization
-	config.Database.Collection("organizations").FindOne(ctx, bson.M{"_id": user.OrganizationID}).Decode(&org)
+	// Get the first membership to log them into
+	var activeMembership models.Membership
+	if len(user.Memberships) > 0 {
+		activeMembership = user.Memberships[0]
+	} else {
+		return "", nil, errors.New("user has no workspaces")
+	}
 
-	// Generate Token with orgName
-	token, err := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
+	// Generate Token with active workspace
+	token, err := utils.GenerateToken(user.ID.Hex(), activeMembership.OrganizationID.Hex(), activeMembership.OrganizationName, activeMembership.Role)
 	return token, user, err
 }

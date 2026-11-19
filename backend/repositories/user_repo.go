@@ -52,21 +52,6 @@ func (r *UserRepo) FindByID(ctx context.Context, id primitive.ObjectID) (*models
 	return &u, nil
 }
 
-// NEW: ListByOrg returns all users belonging to a specific organization
-func (r *UserRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]models.User, error) {
-	cursor, err := r.coll().Find(ctx, bson.M{"organizationId": orgID})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var users []models.User
-	if err := cursor.All(ctx, &users); err != nil {
-		return nil, err
-	}
-	return users, nil
-}
-
 // UpdateRole changes a user's role in the database
 func (r *UserRepo) UpdateRole(ctx context.Context, orgID, userID primitive.ObjectID, newRole string) error {
 	filter := bson.M{
@@ -86,4 +71,35 @@ func (r *UserRepo) RemoveUser(ctx context.Context, orgID, userID primitive.Objec
 	}
 	_, err := r.coll().DeleteOne(ctx, filter)
 	return err
+}
+
+// Add these to the bottom of your user_repo.go file
+
+func (r *UserRepo) UpdateRoleInMemberships(ctx context.Context, orgID, userID primitive.ObjectID, newRole string) error {
+	filter := bson.M{"_id": userID, "memberships.organizationId": orgID}
+	update := bson.M{"$set": bson.M{"memberships.$.role": newRole}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+
+func (r *UserRepo) RemoveMembership(ctx context.Context, orgID, userID primitive.ObjectID) error {
+	filter := bson.M{"_id": userID}
+	update := bson.M{"$pull": bson.M{"memberships": bson.M{"organizationId": orgID}}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+
+func (r *UserRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]models.User, error) {
+	// Find users who have a membership with this OrgID
+	cursor, err := r.coll().Find(ctx, bson.M{"memberships.organizationId": orgID})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var users []models.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
 }

@@ -152,7 +152,7 @@ export default function Register() {
             disabled={isLoading}
             className="w-full bg-brand-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-brand-700 focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-70 transition-colors"
           >
-            {isLoading ? "Creating account..." : "Create Account"}
+            {isLoading ? "Creating Organization..." : "Create Organization"}
           </button>
         </form>
 

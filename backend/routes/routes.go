@@ -67,6 +67,11 @@ func Setup(r *gin.Engine) {
 		ProjectRepo: projectRepo,
 	}
 
+	// Workspace (NEW)
+	workspaceCtrl := &controllers.WorkspaceController{
+		UserRepo: userRepo,
+	}
+
 	// ==========================================
 	// 2. Define Routes
 	// ==========================================
@@ -88,12 +93,16 @@ func Setup(r *gin.Engine) {
 				c.JSON(200, gin.H{
 					"userId": c.GetString("userId"),
 					"orgId":  c.GetString("orgId"),
+					"orgName": c.GetString("orgName"),
 					"role":   c.GetString("role"),
 				})
 			})
 
 			// Users
 			protected.GET("/users", userCtrl.ListMembers)
+
+			// Workspaces
+			protected.POST("/workspaces/switch/:orgId", workspaceCtrl.SwitchWorkspace)
 
 			// Projects
 			projects := protected.Group("/projects")

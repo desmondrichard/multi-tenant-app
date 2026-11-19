@@ -11,11 +11,11 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourname/multi-tenant-pm/config" // <-- Added
+	"github.com/yourname/multi-tenant-pm/config"
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
-	"go.mongodb.org/mongo-driver/bson" // <-- Added
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -72,18 +72,16 @@ func (t *TeamController) Invite(c *gin.Context) {
 		return
 	}
 
-	// Use the frontend URL from environment variable (fallback to localhost)
 	frontendURL := os.Getenv("CLIENT_ORIGIN")
 	if frontendURL == "" {
 		frontendURL = "http://localhost:5173"
 	}
 	inviteLink := fmt.Sprintf("%s/accept-invite?token=%s", frontendURL, token)
 
-	// Brevo API payload
 	payload := map[string]interface{}{
 		"sender": map[string]string{
 			"name":  "TaskFlow",
-			"email": os.Getenv("SMTP_EMAIL"), // Your verified email in Brevo
+			"email": os.Getenv("SMTP_EMAIL"),
 		},
 		"to": []map[string]string{
 			{"email": in.Email},
@@ -144,16 +142,24 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	// Hash password
 	hash, _ := utils.HashPassword(in.Password)
 
-	// Create User
+	// Fetch Org Name
+	var org models.Organization
+	config.Database.Collection("organizations").FindOne(c.Request.Context(), bson.M{"_id": inv.OrganizationID}).Decode(&org)
+
+	// Create User with Membership
 	user := &models.User{
-		OrganizationID: inv.OrganizationID,
-		Name:           in.Name,
-		Email:          inv.Email,
-		PasswordHash:   hash,
-		Role:           inv.Role,
+		Name:         in.Name,
+		Email:        inv.Email,
+		PasswordHash: hash,
+		Memberships: []models.Membership{
+			{
+				OrganizationID:   inv.OrganizationID,
+				OrganizationName: org.Name,
+				Role:             inv.Role,
+			},
+		},
 	}
 
 	if err := t.UserRepo.Create(c.Request.Context(), user); err != nil {
@@ -163,11 +169,8 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 
 	t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
 
-	// --- FIX: Fetch org name to pass to GenerateToken ---
-	var org models.Organization
-	config.Database.Collection("organizations").FindOne(c.Request.Context(), bson.M{"_id": user.OrganizationID}).Decode(&org)
-
-	token, _ := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
+	// Generate token using the new membership
+	token, _ := utils.GenerateToken(user.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
 }
@@ -189,7 +192,8 @@ func (t *TeamController) UpdateRole(c *gin.Context) {
 		return
 	}
 
-	if err := t.UserRepo.UpdateRole(c.Request.Context(), orgID, userID, in.Role); err != nil {
+	// We need a new method in UserRepo to update the role inside the memberships array
+	if err := t.UserRepo.UpdateRoleInMemberships(c.Request.Context(), orgID, userID, in.Role); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -205,14 +209,14 @@ func (t *TeamController) RemoveUser(c *gin.Context) {
 		return
 	}
 
-	// Prevent owners from deleting themselves
 	currentUserID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
 	if userID == currentUserID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot remove yourself"})
 		return
 	}
 
-	if err := t.UserRepo.RemoveUser(c.Request.Context(), orgID, userID); err != nil {
+	// We need to remove the membership, not the whole user if they are in multiple workspaces
+	if err := t.UserRepo.RemoveMembership(c.Request.Context(), orgID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

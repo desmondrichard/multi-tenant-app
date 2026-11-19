@@ -160,7 +160,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="space-y-5 flex-1 max-w-[200px]">
+            <div className="space-y-5 flex-1 max-w-50">
               {stats?.tasksByStatus?.map((status) => (
                 <div
                   key={status.name}

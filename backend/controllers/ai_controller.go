@@ -110,8 +110,6 @@ func (a *AIController) GenerateTask(c *gin.Context) {
 }
 
 // AskAI answers questions based on workspace data
-// AskAI answers questions based on workspace data
-// AskAI answers questions based on workspace data
 func (a *AIController) AskAI(c *gin.Context) {
 	var in AIAskRequest
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -123,10 +121,7 @@ func (a *AIController) AskAI(c *gin.Context) {
 
 	// 1. Fetch Projects, Tasks, and Users for context
 	projects, _ := a.ProjectRepo.List(c.Request.Context(), orgID)
-
-	// Fetch tasks (using `_, _` to discard the total count and error)
 	tasksResult, _, _ := a.TaskRepo.ListByProject(c.Request.Context(), orgID, primitive.NilObjectID, "", "", "", "", 1, 100)
-
 	users, _ := a.UserRepo.ListByOrg(c.Request.Context(), orgID)
 
 	// 2. Build Context String
@@ -138,11 +133,18 @@ func (a *AIController) AskAI(c *gin.Context) {
 
 	contextStr += "\nTEAM MEMBERS:\n"
 	for _, u := range users {
-		contextStr += fmt.Sprintf("- %s (%s)\n", u.Name, u.Role)
+		// Fix: Find the role from the memberships array for the current org
+		role := "member"
+		for _, m := range u.Memberships {
+			if m.OrganizationID == orgID {
+				role = m.Role
+				break
+			}
+		}
+		contextStr += fmt.Sprintf("- %s (%s)\n", u.Name, role)
 	}
 
 	contextStr += "\nTASKS:\n"
-	// Just iterate over the slice directly
 	if tasksResult != nil {
 		for _, t := range tasksResult {
 			assigneeName := "Unassigned"
@@ -185,7 +187,6 @@ func callGeminiWithSDK(prompt string) (string, error) {
 		return "", fmt.Errorf("GEMINI_API_KEY is missing in .env")
 	}
 
-	// Use Background context (no client deadline)
 	ctx := context.Background()
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -196,10 +197,10 @@ func callGeminiWithSDK(prompt string) (string, error) {
 		return "", fmt.Errorf("client init failed: %v", err)
 	}
 
-	models := []string{"gemini-flash-latest", "gemini-2.5-flash", "gemini-3.8-flash"}
+	modelsList := []string{"gemini-flash-latest", "gemini-2.5-flash", "gemini-3.8-flash"}
 	var lastErr error
 
-	for _, modelName := range models {
+	for _, modelName := range modelsList {
 		fmt.Printf("🔄 Trying model: %s\n", modelName)
 
 		resp, err := client.Models.GenerateContent(ctx, modelName,

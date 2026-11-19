@@ -14,12 +14,17 @@ const (
 	RoleViewer  = "viewer"
 )
 
-type User struct {
-	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+type Membership struct {
 	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
-	Name           string             `bson:"name" json:"name"`
-	Email          string             `bson:"email" json:"email"`
-	PasswordHash   string             `bson:"passwordHash" json:"-"`
+	OrganizationName string           `bson:"organizationName" json:"organizationName"`
 	Role           string             `bson:"role" json:"role"`
-	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+
+type User struct {
+	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Name         string             `bson:"name" json:"name"`
+	Email        string             `bson:"email" json:"email"`
+	PasswordHash string             `bson:"passwordHash" json:"-"`
+	Memberships  []Membership       `bson:"memberships" json:"memberships"` // <-- New array
+	CreatedAt    time.Time          `bson:"createdAt" json:"createdAt"`
 }

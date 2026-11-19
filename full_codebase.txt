@@ -1,0 +1,5122 @@
+﻿=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\config\mongodb.go ===
+package config
+
+import (
+	"context"
+	"log"
+	"os"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+var (
+	Client   *mongo.Client
+	Database *mongo.Database
+)
+
+func ConnectMongo() {
+	uri := os.Getenv("MONGO_URI")
+	dbName := os.Getenv("MONGO_DB")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		log.Fatal("âŒ Mongo connect error: ", err)
+	}
+
+	if err := client.Ping(ctx, nil); err != nil {
+		log.Fatal("âŒ Mongo ping error: ", err)
+	}
+
+	Client = client
+	Database = client.Database(dbName)
+	log.Println("âœ… MongoDB connected:", dbName)
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\config\redis.go ===
+package config
+
+import (
+	"context"
+	"crypto/tls"
+	"log"
+	"os"
+
+	"github.com/redis/go-redis/v9"
+)
+
+var RDB *redis.Client
+
+func ConnectRedis() {
+	addr := os.Getenv("REDIS_ADDR")
+	password := os.Getenv("REDIS_PASSWORD")
+
+	// If no address is provided, skip gracefully (useful for quick local tests)
+	if addr == "" {
+		log.Println("âš ï¸ Redis not configured, skipping connection")
+		return
+	}
+
+	// Upstash requires TLS and a password
+	RDB = redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: password,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	})
+
+	if err := RDB.Ping(context.Background()).Err(); err != nil {
+		// We use log.Println instead of log.Fatal here so that if Redis goes down,
+		// your whole app doesn't crash. It will just log a warning.
+		log.Println("âš ï¸ Redis connect error: ", err)
+		return
+	}
+
+	log.Println("âœ… Redis connected to Upstash")
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\activity_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ActivityController struct {
+	Repo *repositories.ActivityRepo
+}
+
+func (a *ActivityController) ListByTask(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	activities, err := a.Repo.ListByTask(c.Request.Context(), orgID, taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if activities == nil {
+		activities = []models.Activity{}
+	}
+	c.JSON(http.StatusOK, activities)
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\ai_controller.go ===
+package controllers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"google.golang.org/genai"
+)
+
+type AIController struct {
+	TaskRepo    *repositories.TaskRepo
+	UserRepo    *repositories.UserRepo
+	ProjectRepo *repositories.ProjectRepo
+}
+
+type AITaskRequest struct {
+	Prompt    string `json:"prompt"`
+	ProjectID string `json:"projectId"`
+}
+
+type AIAskRequest struct {
+	Question string `json:"question"`
+}
+
+type AITaskResponse struct {
+	Title    string `json:"title"`
+	Priority string `json:"priority"`
+	Assignee string `json:"assignee"`
+}
+
+// GenerateTask creates a task based on a prompt
+func (a *AIController) GenerateTask(c *gin.Context) {
+	var in AITaskRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	projectID, _ := primitive.ObjectIDFromHex(in.ProjectID)
+
+	// 1. Fetch users for AI context
+	users, _ := a.UserRepo.ListByOrg(c.Request.Context(), orgID)
+	var userNames []string
+	for _, u := range users {
+		userNames = append(userNames, u.Name)
+	}
+
+	// 2. Build Prompt
+	prompt := fmt.Sprintf(`
+		You are an AI assistant for a project management app.
+		The user will give you a prompt. You must extract:
+		- "title": A short title for the task.
+		- "priority": Must be exactly "low", "medium", or "high".
+		- "assignee": The name of the person to assign. Choose from: %v. If no one matches, leave it empty.
+		
+		Respond ONLY with a valid JSON object. Do not include markdown formatting.
+		User Prompt: "%s"
+	`, userNames, in.Prompt)
+
+	// 3. Call Gemini
+	aiResponse, err := callGeminiWithSDK(prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI failed: " + err.Error()})
+		return
+	}
+
+	// 4. Parse AI Response
+	var parsedResult AITaskResponse
+	if err := json.Unmarshal([]byte(aiResponse), &parsedResult); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI returned invalid format", "raw": aiResponse})
+		return
+	}
+
+	// 5. Find Assignee
+	var assigneeID primitive.ObjectID
+	for _, u := range users {
+		if u.Name == parsedResult.Assignee {
+			assigneeID = u.ID
+			break
+		}
+	}
+
+	// 6. Save Task
+	task := &models.Task{
+		OrganizationID: orgID,
+		ProjectID:      projectID,
+		Title:          parsedResult.Title,
+		Priority:       parsedResult.Priority,
+		AssigneeID:     assigneeID,
+		Status:         models.StatusTodo,
+		CreatedBy:      userID,
+		Subtasks:       []models.Subtask{},
+	}
+
+	if err := a.TaskRepo.Create(c.Request.Context(), task); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save task"})
+		return
+	}
+
+	c.JSON(http.StatusOK, task)
+}
+
+// AskAI answers questions based on workspace data
+// AskAI answers questions based on workspace data
+// AskAI answers questions based on workspace data
+func (a *AIController) AskAI(c *gin.Context) {
+	var in AIAskRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+
+	// 1. Fetch Projects, Tasks, and Users for context
+	projects, _ := a.ProjectRepo.List(c.Request.Context(), orgID)
+
+	// Fetch tasks (using `_, _` to discard the total count and error)
+	tasksResult, _, _ := a.TaskRepo.ListByProject(c.Request.Context(), orgID, primitive.NilObjectID, "", "", "", "", 1, 100)
+
+	users, _ := a.UserRepo.ListByOrg(c.Request.Context(), orgID)
+
+	// 2. Build Context String
+	contextStr := "--- WORKSPACE DATA ---\n"
+	contextStr += "PROJECTS:\n"
+	for _, p := range projects {
+		contextStr += fmt.Sprintf("- %s (Key: %s): %s\n", p.Name, p.Key, p.Description)
+	}
+
+	contextStr += "\nTEAM MEMBERS:\n"
+	for _, u := range users {
+		contextStr += fmt.Sprintf("- %s (%s)\n", u.Name, u.Role)
+	}
+
+	contextStr += "\nTASKS:\n"
+	// Just iterate over the slice directly
+	if tasksResult != nil {
+		for _, t := range tasksResult {
+			assigneeName := "Unassigned"
+			for _, u := range users {
+				if u.ID == t.AssigneeID {
+					assigneeName = u.Name
+					break
+				}
+			}
+			contextStr += fmt.Sprintf("- [%s] %s | Status: %s | Priority: %s | Assignee: %s\n", t.ID.Hex(), t.Title, t.Status, t.Priority, assigneeName)
+		}
+	}
+
+	// 3. Build Prompt
+	prompt := fmt.Sprintf(`
+		You are a helpful AI assistant for a project management app.
+		Here is the current data of the workspace:
+		%s
+		
+		User Question: "%s"
+		
+		Answer the user's question based ONLY on the data provided above. Be concise and professional. If the answer is not in the data, say "I don't have that information in the workspace."
+	`, contextStr, in.Question)
+
+	// 4. Call Gemini
+	answer, err := callGeminiWithSDK(prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI is busy, please try again."})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"answer": answer})
+}
+
+// --- Gemini API Helper ---
+
+func callGeminiWithSDK(prompt string) (string, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY is missing in .env")
+	}
+
+	// Use Background context (no client deadline)
+	ctx := context.Background()
+
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return "", fmt.Errorf("client init failed: %v", err)
+	}
+
+	models := []string{"gemini-flash-latest", "gemini-2.5-flash", "gemini-3.8-flash"}
+	var lastErr error
+
+	for _, modelName := range models {
+		fmt.Printf("ðŸ”„ Trying model: %s\n", modelName)
+
+		resp, err := client.Models.GenerateContent(ctx, modelName,
+			[]*genai.Content{
+				{Parts: []*genai.Part{{Text: prompt}}},
+			}, nil)
+
+		if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+			text := resp.Candidates[0].Content.Parts[0].Text
+			fmt.Printf("âœ… Success with model: %s\n", modelName)
+			return cleanJSON(text), nil
+		}
+
+		lastErr = err
+		fmt.Printf("âš ï¸ Model %s failed: %v\n", modelName, err)
+	}
+
+	return "", fmt.Errorf("all AI models failed. Last error: %v", lastErr)
+}
+
+func cleanJSON(s string) string {
+	if len(s) > 7 && s[:7] == "```json" {
+		s = s[7:]
+	}
+	if len(s) > 3 && s[len(s)-3:] == "```" {
+		s = s[:len(s)-3]
+	}
+	return s
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\analytics_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/config"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type AnalyticsController struct{}
+
+func (a *AnalyticsController) GetDashboardStats(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	ctx := c.Request.Context()
+
+	// 1. Count Projects
+	projectsColl := config.Database.Collection("projects")
+	totalProjects, _ := projectsColl.CountDocuments(ctx, bson.M{"organizationId": orgID})
+
+	// 2. Count Tasks by Status
+	tasksColl := config.Database.Collection("tasks")
+
+	totalTasks, _ := tasksColl.CountDocuments(ctx, bson.M{"organizationId": orgID})
+
+	completedTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
+		"organizationId": orgID,
+		"status":         "done",
+	})
+
+	underReviewTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
+		"organizationId": orgID,
+		"status":         "under_review", // <-- Added
+	})
+
+	inProgressTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
+		"organizationId": orgID,
+		"status":         "in_progress",
+	})
+
+	todoTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
+		"organizationId": orgID,
+		"status":         "todo",
+	})
+
+	// Return the aggregated data
+	c.JSON(http.StatusOK, gin.H{
+		"totalProjects": totalProjects,
+		"totalTasks":    totalTasks,
+		"tasksByStatus": []gin.H{
+			{"name": "To Do", "value": todoTasks, "fill": "#94a3b8"},
+			{"name": "In Progress", "value": inProgressTasks, "fill": "#3b82f6"},
+			{"name": "Under Review", "value": underReviewTasks, "fill": "#f59e0b"}, // <-- Added
+			{"name": "Done", "value": completedTasks, "fill": "#22c55e"},
+		},
+	})
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\auth_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"github.com/yourname/multi-tenant-pm/services"
+)
+
+var validate = validator.New()
+
+type AuthController struct {
+	Svc *services.AuthService
+}
+
+func (c *AuthController) Register(ctx *gin.Context) {
+	var in services.RegisterInput
+	if err := ctx.ShouldBindJSON(&in); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validate.Struct(in); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	token, user, err := c.Svc.Register(ctx.Request.Context(), in)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusCreated, gin.H{"token": token, "user": user})
+}
+
+func (c *AuthController) Login(ctx *gin.Context) {
+	var in services.LoginInput
+	if err := ctx.ShouldBindJSON(&in); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validate.Struct(in); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	token, user, err := c.Svc.Login(ctx.Request.Context(), in)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\comment_controller.go ===
+package controllers
+
+import (
+	"fmt" // <-- Added this
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type CommentController struct {
+	Repo             *repositories.CommentRepo
+	ActivityRepo     *repositories.ActivityRepo
+	NotificationRepo *repositories.NotificationRepo
+	TaskRepo         *repositories.TaskRepo
+}
+
+func (c *CommentController) Create(ctx *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(ctx.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(ctx.GetString("userId"))
+	taskID, err := primitive.ObjectIDFromHex(ctx.Param("taskId"))
+
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	var in struct {
+		Content string `json:"content" validate:"required,min=1"`
+	}
+	if err := ctx.ShouldBindJSON(&in); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	comment := &models.Comment{
+		OrganizationID: orgID,
+		TaskID:         taskID,
+		UserID:         userID,
+		Content:        in.Content,
+	}
+
+	if err := c.Repo.Create(ctx.Request.Context(), comment); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 1. Log Activity
+	c.ActivityRepo.Create(ctx.Request.Context(), &models.Activity{
+		OrganizationID: orgID,
+		TaskID:         taskID,
+		UserID:         userID,
+		Action:         models.ActionAddedComment,
+		Details:        "Added a comment",
+	})
+
+	// 2. Send Notification to Assignee
+	task, _ := c.TaskRepo.FindByID(ctx.Request.Context(), orgID, taskID)
+	if task != nil && !task.AssigneeID.IsZero() && task.AssigneeID != userID {
+		c.NotificationRepo.Create(ctx.Request.Context(), &models.Notification{
+			OrganizationID: orgID,
+			UserID:         task.AssigneeID,
+			Title:          "New Comment",
+			Message:        "Someone commented on your task: " + task.Title,
+		})
+	}
+
+	// 3. Broadcast to WebSocket clients in the same Org
+	// 3. Broadcast to WebSocket clients in the same Org (Run in background)
+	broadcastMsg := fmt.Sprintf(`{"type":"NEW_COMMENT","orgId":"%s","taskId":"%s"}`, orgID.Hex(), taskID.Hex())
+	go func() {
+		ws.GlobalHub.Broadcast <- []byte(broadcastMsg)
+	}()
+
+	// 4. Send the final HTTP response ONLY ONCE
+	ctx.JSON(http.StatusCreated, comment)
+}
+
+func (c *CommentController) ListByTask(ctx *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(ctx.GetString("orgId"))
+	taskID, err := primitive.ObjectIDFromHex(ctx.Param("taskId"))
+
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	comments, err := c.Repo.ListByTask(ctx.Request.Context(), orgID, taskID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if comments == nil {
+		comments = []models.Comment{}
+	}
+	ctx.JSON(http.StatusOK, comments)
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\notification_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type NotificationController struct {
+	Repo *repositories.NotificationRepo
+}
+
+func (n *NotificationController) List(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+
+	notifications, err := n.Repo.ListByUser(c.Request.Context(), orgID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if notifications == nil {
+		notifications = []models.Notification{}
+	}
+	c.JSON(http.StatusOK, notifications)
+}
+
+func (n *NotificationController) MarkAsRead(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	notifID, err := primitive.ObjectIDFromHex(c.Param("id"))
+	
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notification ID"})
+		return
+	}
+
+	if err := n.Repo.MarkAsRead(c.Request.Context(), orgID, userID, notifID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\project_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ProjectController struct {
+	Repo *repositories.ProjectRepo
+}
+
+func (p *ProjectController) Create(c *gin.Context) {
+	var in struct {
+		Name        string `json:"name" validate:"required,min=2"`
+		Key         string `json:"key" validate:"required,min=2,max=8"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+
+	proj := &models.Project{
+		OrganizationID: orgID,
+		Name:           in.Name,
+		Key:            in.Key,
+		Description:    in.Description,
+		CreatedBy:      userID,
+	}
+
+	if err := p.Repo.Create(c.Request.Context(), proj); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, proj)
+}
+
+func (p *ProjectController) List(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+
+	projects, err := p.Repo.List(c.Request.Context(), orgID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, projects)
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\task_controller.go ===
+package controllers
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type TaskController struct {
+	Repo             *repositories.TaskRepo
+	ActivityRepo     *repositories.ActivityRepo
+	NotificationRepo *repositories.NotificationRepo
+}
+
+func (t *TaskController) Create(c *gin.Context) {
+	var in struct {
+		Title       string `json:"title" validate:"required,min=2"`
+		Description string `json:"description"`
+		Priority    string `json:"priority"`
+		Status      string `json:"status"`
+		AssigneeID  string `json:"assigneeId"`
+		DueDate     string `json:"dueDate"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+
+	projectID, err := primitive.ObjectIDFromHex(c.Param("projectId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	var assigneeID primitive.ObjectID
+	if in.AssigneeID != "" {
+		assigneeID, _ = primitive.ObjectIDFromHex(in.AssigneeID)
+	}
+
+	// Parse Due Date
+	var dueDate *time.Time
+	if in.DueDate != "" {
+		parsedDate, err := time.Parse("2006-01-02", in.DueDate)
+		if err == nil {
+			dueDate = &parsedDate
+		}
+	}
+
+	if in.Status == "" {
+		in.Status = models.StatusTodo
+	}
+	if in.Priority == "" {
+		in.Priority = models.PriorityMedium
+	}
+
+	task := &models.Task{
+		OrganizationID: orgID,
+		ProjectID:      projectID,
+		Title:          in.Title,
+		Description:    in.Description,
+		Status:         in.Status,
+		Priority:       in.Priority,
+		AssigneeID:     assigneeID,
+		CreatedBy:      userID,
+		DueDate:        dueDate,
+	}
+
+	if err := t.Repo.Create(c.Request.Context(), task); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Log Activity
+	t.ActivityRepo.Create(c.Request.Context(), &models.Activity{
+		OrganizationID: orgID,
+		TaskID:         task.ID,
+		UserID:         userID,
+		Action:         models.ActionCreatedTask,
+		Details:        "Created the task",
+	})
+
+	// Send Notification
+	if !assigneeID.IsZero() && assigneeID != userID {
+		t.NotificationRepo.Create(c.Request.Context(), &models.Notification{
+			OrganizationID: orgID,
+			UserID:         assigneeID,
+			Title:          "New Task Assigned",
+			Message:        "You have been assigned to: " + task.Title,
+		})
+	}
+
+	c.JSON(http.StatusCreated, task)
+}
+
+func (t *TaskController) ListByProject(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	projectID, err := primitive.ObjectIDFromHex(c.Param("projectId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	search := c.Query("search")
+	status := c.Query("status")
+	priority := c.Query("priority")
+	sortBy := c.Query("sort")
+
+	page, _ := strconv.ParseInt(c.DefaultQuery("page", "1"), 10, 64)
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "20"), 10, 64)
+
+	tasks, totalCount, err := t.Repo.ListByProject(
+		c.Request.Context(), orgID, projectID,
+		search, status, priority, sortBy, page, limit,
+	)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if tasks == nil {
+		tasks = []models.Task{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tasks":      tasks,
+		"totalCount": totalCount,
+		"page":       page,
+		"limit":      limit,
+	})
+}
+
+func (t *TaskController) UpdateStatus(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	var in struct {
+		Status string `json:"status" validate:"required"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := t.Repo.UpdateStatus(c.Request.Context(), orgID, taskID, in.Status); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	t.ActivityRepo.Create(c.Request.Context(), &models.Activity{
+		OrganizationID: orgID,
+		TaskID:         taskID,
+		UserID:         userID,
+		Action:         models.ActionChangedStatus,
+		Details:        "Changed status to " + in.Status,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (t *TaskController) ListMyTasks(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+
+	tasks, err := t.Repo.ListByAssignee(c.Request.Context(), orgID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if tasks == nil {
+		tasks = []models.Task{}
+	}
+	c.JSON(http.StatusOK, tasks)
+}
+
+// ==========================================
+// SUBTASK CONTROLLERS
+// ==========================================
+
+func (t *TaskController) AddSubtask(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	taskID, _ := primitive.ObjectIDFromHex(c.Param("taskId"))
+
+	var in struct {
+		Title string `json:"title" validate:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create subtask with a string ID (fixes the 500 error)
+	subtask := models.Subtask{
+		ID:        primitive.NewObjectID().Hex(),
+		Title:     in.Title,
+		Completed: false,
+	}
+
+	if err := t.Repo.AddSubtask(c.Request.Context(), orgID, taskID, subtask); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, subtask)
+}
+
+func (t *TaskController) ToggleSubtask(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	taskID, _ := primitive.ObjectIDFromHex(c.Param("taskId"))
+
+	// Get subtask ID as a string (matches the model)
+	subtaskID := c.Param("subtaskId")
+
+	var in struct {
+		Completed bool `json:"completed"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := t.Repo.ToggleSubtask(c.Request.Context(), orgID, taskID, subtaskID, in.Completed); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\team_controller.go ===
+package controllers
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/config" // <-- Added
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"github.com/yourname/multi-tenant-pm/utils"
+	"go.mongodb.org/mongo-driver/bson" // <-- Added
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type TeamController struct {
+	UserRepo *repositories.UserRepo
+	InvRepo  *repositories.InvitationRepo
+}
+
+// List Team Members
+func (t *TeamController) ListMembers(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	users, _ := t.UserRepo.ListByOrg(c.Request.Context(), orgID)
+	if users == nil {
+		users = []models.User{}
+	}
+	c.JSON(http.StatusOK, users)
+}
+
+// Invite generates a token and sends an email via Brevo HTTP API
+func (t *TeamController) Invite(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	var in struct {
+		Email string `json:"email" validate:"required,email"`
+		Role  string `json:"role" validate:"required"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 1. Generate Token
+	b := make([]byte, 16)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	// 2. Save Invitation to DB
+	inv := &models.Invitation{
+		OrganizationID: orgID,
+		Email:          in.Email,
+		Role:           in.Role,
+		Token:          token,
+	}
+
+	if err := t.InvRepo.Create(c.Request.Context(), inv); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 3. Send Email via Brevo HTTP API
+	apiKey := os.Getenv("BREVO_API_KEY")
+	if apiKey == "" {
+		fmt.Println("âŒ BREVO_API_KEY is missing in .env")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Email service not configured"})
+		return
+	}
+
+	// Use the frontend URL from environment variable (fallback to localhost)
+	frontendURL := os.Getenv("CLIENT_ORIGIN")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:5173"
+	}
+	inviteLink := fmt.Sprintf("%s/accept-invite?token=%s", frontendURL, token)
+
+	// Brevo API payload
+	payload := map[string]interface{}{
+		"sender": map[string]string{
+			"name":  "TaskFlow",
+			"email": os.Getenv("SMTP_EMAIL"), // Your verified email in Brevo
+		},
+		"to": []map[string]string{
+			{"email": in.Email},
+		},
+		"subject": "Invitation to join TaskFlow",
+		"htmlContent": fmt.Sprintf(`
+			<div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+				<h2 style="color: #1e293b;">You've been invited to TaskFlow!</h2>
+				<p style="color: #475569;">You have been invited to join the workspace as a <strong>%s</strong>.</p>
+				<p style="color: #475569;">Click the button below to create your account and join the team.</p>
+				<div style="text-align: center; margin: 30px 0;">
+					<a href="%s" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Accept Invitation</a>
+				</div>
+				<p style="margin-top: 20px; font-size: 12px; color: #94a3b8;">Or copy and paste this link: <br/> %s</p>
+			</div>
+		`, in.Role, inviteLink, inviteLink),
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", "https://api.brevo.com/v3/smtp/email", bytes.NewBuffer(jsonPayload))
+	req.Header.Set("api-key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("âŒ Failed to reach Brevo API:", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Println("âŒ Brevo API Error:", string(body))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Invitation email sent successfully"})
+}
+
+// Accept Invite (Public route)
+func (t *TeamController) AcceptInvite(c *gin.Context) {
+	var in struct {
+		Token    string `json:"token" validate:"required"`
+		Name     string `json:"name" validate:"required"`
+		Password string `json:"password" validate:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	inv, err := t.InvRepo.FindByToken(c.Request.Context(), in.Token)
+	if err != nil || inv == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired invite token"})
+		return
+	}
+
+	// Hash password
+	hash, _ := utils.HashPassword(in.Password)
+
+	// Create User
+	user := &models.User{
+		OrganizationID: inv.OrganizationID,
+		Name:           in.Name,
+		Email:          inv.Email,
+		PasswordHash:   hash,
+		Role:           inv.Role,
+	}
+
+	if err := t.UserRepo.Create(c.Request.Context(), user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Email might already be registered"})
+		return
+	}
+
+	t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
+
+	// --- FIX: Fetch org name to pass to GenerateToken ---
+	var org models.Organization
+	config.Database.Collection("organizations").FindOne(c.Request.Context(), bson.M{"_id": user.OrganizationID}).Decode(&org)
+
+	token, _ := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
+
+	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+
+// UpdateRole updates a user's role (Promote/Demote)
+func (t *TeamController) UpdateRole(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, err := primitive.ObjectIDFromHex(c.Param("userId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	var in struct {
+		Role string `json:"role" validate:"required"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := t.UserRepo.UpdateRole(c.Request.Context(), orgID, userID, in.Role); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Role updated successfully"})
+}
+
+// RemoveUser deletes a user from the organization
+func (t *TeamController) RemoveUser(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, err := primitive.ObjectIDFromHex(c.Param("userId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	// Prevent owners from deleting themselves
+	currentUserID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	if userID == currentUserID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot remove yourself"})
+		return
+	}
+
+	if err := t.UserRepo.RemoveUser(c.Request.Context(), orgID, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "User removed successfully"})
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\user_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type UserController struct {
+	Repo *repositories.UserRepo
+}
+
+// ListMembers returns all users belonging to the logged-in user's organization
+func (u *UserController) ListMembers(c *gin.Context) {
+	orgID, err := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid organization context"})
+		return
+	}
+
+	users, err := u.Repo.ListByOrg(c.Request.Context(), orgID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Ensure we return an empty array instead of null if no users are found
+	if users == nil {
+		users = []models.User{}
+	}
+
+	c.JSON(http.StatusOK, users)
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\controllers\ws_controller.go ===
+package controllers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/yourname/multi-tenant-pm/utils"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
+)
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // In production, restrict this to your frontend URL
+	},
+}
+
+func HandleWS(c *gin.Context) {
+	// Get token from query param (since browsers can't easily set headers for WS)
+	token := c.Query("token")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing token"})
+		return
+	}
+
+	// Parse token to get OrgID
+	claims, err := utils.ParseToken(token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+		return
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+
+	client := &ws.Client{
+		Hub:   ws.GlobalHub,
+		Conn:  conn,
+		Send:  make(chan []byte, 256),
+		OrgID: claims.OrganizationID,
+	}
+
+	client.Hub.Register <- client
+
+	go client.WritePump()
+	go client.ReadPump()
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\middleware\auth.go ===
+package middleware
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/utils"
+)
+
+func AuthRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.GetHeader("Authorization")
+		if !strings.HasPrefix(h, "Bearer ") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
+			return
+		}
+		claims, err := utils.ParseToken(strings.TrimPrefix(h, "Bearer "))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return
+		}
+		c.Set("userId", claims.UserID)
+		c.Set("orgId", claims.OrganizationID)
+		c.Set("orgName", claims.OrgName) // <-- Added
+		c.Set("role", claims.Role)
+		c.Next()
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\middleware\rbac.go ===
+package middleware
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func RequireRole(roles ...string) gin.HandlerFunc {
+	allowed := map[string]bool{}
+	for _, r := range roles {
+		allowed[r] = true
+	}
+
+	return func(c *gin.Context) {
+		role := c.GetString("role")
+		if !allowed[role] {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+			return
+		}
+		c.Next()
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\activity.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+const (
+	ActionCreatedTask   = "created_task"
+	ActionChangedStatus = "changed_status"
+	ActionAddedComment  = "added_comment"
+	ActionAssignedTask  = "assigned_task"
+)
+
+type Activity struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	TaskID         primitive.ObjectID `bson:"taskId" json:"taskId"`
+	UserID         primitive.ObjectID `bson:"userId" json:"userId"`
+	Action         string             `bson:"action" json:"action"`
+	Details        string             `bson:"details,omitempty" json:"details,omitempty"` // e.g., "from todo to in_progress"
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\comment.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type Comment struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	TaskID         primitive.ObjectID `bson:"taskId" json:"taskId"`
+	UserID         primitive.ObjectID `bson:"userId" json:"userId"`
+	Content        string             `bson:"content" json:"content"`
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\invitation.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type Invitation struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	Email          string             `bson:"email" json:"email"`
+	Role           string             `bson:"role" json:"role"`
+	Token          string             `bson:"token" json:"token"`   // The unique link token
+	Status         string             `bson:"status" json:"status"` // "pending", "accepted"
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\notification.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type Notification struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	UserID         primitive.ObjectID `bson:"userId" json:"userId"` // The user receiving the notification
+	Title          string             `bson:"title" json:"title"`
+	Message        string             `bson:"message" json:"message"`
+	IsRead         bool               `bson:"isRead" json:"isRead"`
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\organization.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type Organization struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Name      string             `bson:"name" json:"name"`
+	Slug      string             `bson:"slug" json:"slug"`
+	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\project.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type Project struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	Name           string             `bson:"name" json:"name"`
+	Key            string             `bson:"key" json:"key"`
+	Description    string             `bson:"description" json:"description"`
+	CreatedBy      primitive.ObjectID `bson:"createdBy" json:"createdBy"`
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\task.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+const (
+	StatusTodo        = "todo"
+	StatusInProgress  = "in_progress"
+	StatusUnderReview = "under_review"
+	StatusDone        = "done"
+)
+
+const (
+	PriorityLow    = "low"
+	PriorityMedium = "medium"
+	PriorityHigh   = "high"
+)
+
+type Subtask struct {
+	ID        string `bson:"id" json:"id"` // Standard string ID for arrays
+	Title     string `bson:"title" json:"title"`
+	Completed bool   `bson:"completed" json:"completed"`
+}
+
+type Task struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	ProjectID      primitive.ObjectID `bson:"projectId" json:"projectId"`
+	Title          string             `bson:"title" json:"title"`
+	Description    string             `bson:"description" json:"description"`
+	Status         string             `bson:"status" json:"status"`
+	Priority       string             `bson:"priority" json:"priority"`
+	AssigneeID     primitive.ObjectID `bson:"assigneeId,omitempty" json:"assigneeId"`
+	CreatedBy      primitive.ObjectID `bson:"createdBy" json:"createdBy"`
+	DueDate        *time.Time         `bson:"dueDate,omitempty" json:"dueDate"`
+	Subtasks       []Subtask          `bson:"subtasks" json:"subtasks"`
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\models\user.go ===
+package models
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+const (
+	RoleOwner   = "owner"
+	RoleAdmin   = "admin"
+	RoleManager = "manager"
+	RoleMember  = "member"
+	RoleViewer  = "viewer"
+)
+
+type User struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	OrganizationID primitive.ObjectID `bson:"organizationId" json:"organizationId"`
+	Name           string             `bson:"name" json:"name"`
+	Email          string             `bson:"email" json:"email"`
+	PasswordHash   string             `bson:"passwordHash" json:"-"`
+	Role           string             `bson:"role" json:"role"`
+	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\activity_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type ActivityRepo struct{}
+
+func (r *ActivityRepo) coll() *mongo.Collection {
+	return config.Database.Collection("activities")
+}
+
+func (r *ActivityRepo) Create(ctx context.Context, a *models.Activity) error {
+	a.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, a)
+	if err != nil {
+		return err
+	}
+	a.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *ActivityRepo) ListByTask(ctx context.Context, orgID, taskID primitive.ObjectID) ([]models.Activity, error) {
+	filter := bson.M{
+		"organizationId": orgID,
+		"taskId":         taskID,
+	}
+	// Sort newest first for the activity feed
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
+
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var activities []models.Activity
+	if err := cursor.All(ctx, &activities); err != nil {
+		return nil, err
+	}
+	return activities, nil
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\comment_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type CommentRepo struct{}
+
+func (r *CommentRepo) coll() *mongo.Collection {
+	return config.Database.Collection("comments")
+}
+
+func (r *CommentRepo) Create(ctx context.Context, c *models.Comment) error {
+	c.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, c)
+	if err != nil {
+		return err
+	}
+	c.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *CommentRepo) ListByTask(ctx context.Context, orgID, taskID primitive.ObjectID) ([]models.Comment, error) {
+	filter := bson.M{
+		"organizationId": orgID,
+		"taskId":         taskID,
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}}) // Oldest first
+	
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var comments []models.Comment
+	if err := cursor.All(ctx, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\invitation_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type InvitationRepo struct{}
+
+func (r *InvitationRepo) coll() *mongo.Collection {
+	return config.Database.Collection("invitations")
+}
+
+func (r *InvitationRepo) Create(ctx context.Context, inv *models.Invitation) error {
+	inv.CreatedAt = time.Now()
+	inv.Status = "pending"
+	res, err := r.coll().InsertOne(ctx, inv)
+	if err != nil {
+		return err
+	}
+	inv.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *InvitationRepo) FindByToken(ctx context.Context, token string) (*models.Invitation, error) {
+	var inv models.Invitation
+	err := r.coll().FindOne(ctx, bson.M{"token": token, "status": "pending"}).Decode(&inv)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	return &inv, err
+}
+
+func (r *InvitationRepo) MarkAccepted(ctx context.Context, id primitive.ObjectID) error {
+	_, err := r.coll().UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"status": "accepted"}})
+	return err
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\notification_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type NotificationRepo struct{}
+
+func (r *NotificationRepo) coll() *mongo.Collection {
+	return config.Database.Collection("notifications")
+}
+
+func (r *NotificationRepo) Create(ctx context.Context, n *models.Notification) error {
+	n.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, n)
+	if err != nil {
+		return err
+	}
+	n.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+// ListByUser gets the latest 20 notifications for a specific user
+func (r *NotificationRepo) ListByUser(ctx context.Context, orgID, userID primitive.ObjectID) ([]models.Notification, error) {
+	filter := bson.M{
+		"organizationId": orgID,
+		"userId":         userID,
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(20)
+
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var notifications []models.Notification
+	if err := cursor.All(ctx, &notifications); err != nil {
+		return nil, err
+	}
+	return notifications, nil
+}
+
+// MarkAsRead updates a notification to read status
+func (r *NotificationRepo) MarkAsRead(ctx context.Context, orgID, userID, notifID primitive.ObjectID) error {
+	filter := bson.M{
+		"_id":            notifID,
+		"organizationId": orgID,
+		"userId":         userID,
+	}
+	update := bson.M{"$set": bson.M{"isRead": true}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\project_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type ProjectRepo struct{}
+
+func (r *ProjectRepo) coll() *mongo.Collection {
+	return config.Database.Collection("projects")
+}
+
+func (r *ProjectRepo) Create(ctx context.Context, p *models.Project) error {
+	p.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, p)
+	if err != nil {
+		return err
+	}
+	p.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *ProjectRepo) List(ctx context.Context, orgID primitive.ObjectID) ([]models.Project, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
+	cursor, err := r.coll().Find(ctx, bson.M{"organizationId": orgID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var projects []models.Project
+	if err := cursor.All(ctx, &projects); err != nil {
+		return nil, err
+	}
+	return projects, nil
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\task_repo.go ===
+package repositories
+
+import (
+	"context"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type TaskRepo struct{}
+
+func (r *TaskRepo) coll() *mongo.Collection {
+	return config.Database.Collection("tasks")
+}
+
+func (r *TaskRepo) Create(ctx context.Context, t *models.Task) error {
+	t.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, t)
+	if err != nil {
+		return err
+	}
+	t.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *TaskRepo) ListByProject(ctx context.Context, orgID, projectID primitive.ObjectID, search string, status string, priority string, sortBy string, page int64, limit int64) ([]models.Task, int64, error) {
+	filter := bson.M{
+		"organizationId": orgID,
+		"projectId":      projectID,
+	}
+
+	if search != "" {
+		filter["title"] = bson.M{"$regex": search, "$options": "i"}
+	}
+	if status != "" && status != "all" {
+		filter["status"] = status
+	}
+	if priority != "" && priority != "all" {
+		filter["priority"] = priority
+	}
+
+	totalCount, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	sortOrder := -1
+	sortField := "createdAt"
+	if sortBy == "oldest" {
+		sortOrder = 1
+	} else if sortBy == "priority" {
+		sortField = "priority"
+		sortOrder = 1
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: sortField, Value: sortOrder}}).
+		SetSkip((page - 1) * limit).
+		SetLimit(limit)
+
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var tasks []models.Task
+	if err := cursor.All(ctx, &tasks); err != nil {
+		return nil, 0, err
+	}
+	return tasks, totalCount, nil
+}
+
+func (r *TaskRepo) UpdateStatus(ctx context.Context, orgID, taskID primitive.ObjectID, status string) error {
+	filter := bson.M{
+		"_id":            taskID,
+		"organizationId": orgID,
+	}
+	update := bson.M{"$set": bson.M{"status": status}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+
+func (r *TaskRepo) FindByID(ctx context.Context, orgID, taskID primitive.ObjectID) (*models.Task, error) {
+	var task models.Task
+	filter := bson.M{
+		"_id":            taskID,
+		"organizationId": orgID,
+	}
+	err := r.coll().FindOne(ctx, filter).Decode(&task)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.ObjectID) ([]models.Task, error) {
+	filter := bson.M{
+		"organizationId": orgID,
+		"assigneeId":     userID,
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var tasks []models.Task
+	if err := cursor.All(ctx, &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func (r *TaskRepo) AddSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtask models.Subtask) error {
+	filter := bson.M{"_id": taskID, "organizationId": orgID}
+
+	// If subtasks is null or doesn't exist, $push will fail.
+	// We use an aggregation pipeline to check and initialize the array first.
+	update := bson.A{
+		bson.M{
+			"$set": bson.M{
+				"subtasks": bson.M{
+					"$cond": bson.M{
+						"if":   bson.M{"$isArray": "$subtasks"},
+						"then": "$subtasks",
+						"else": bson.A{},
+					},
+				},
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"subtasks": bson.M{
+					"$concatArrays": []interface{}{
+						"$subtasks",
+						bson.A{subtask},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+
+func (r *TaskRepo) ToggleSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtaskID string, completed bool) error {
+	filter := bson.M{
+		"_id":            taskID,
+		"organizationId": orgID,
+		"subtasks.id":    subtaskID, // Matches bson:"id" from models.Subtask
+	}
+	update := bson.M{"$set": bson.M{"subtasks.$.completed": completed}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\repositories\user_repo.go ===
+package repositories
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type UserRepo struct{}
+
+func (r *UserRepo) coll() *mongo.Collection {
+	return config.Database.Collection("users")
+}
+
+func (r *UserRepo) Create(ctx context.Context, u *models.User) error {
+	u.CreatedAt = time.Now()
+	res, err := r.coll().InsertOne(ctx, u)
+	if err != nil {
+		return err
+	}
+	u.ID = res.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+func (r *UserRepo) FindByEmail(ctx context.Context, email string) (*models.User, error) {
+	var u models.User
+	err := r.coll().FindOne(ctx, bson.M{"email": email}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *UserRepo) FindByID(ctx context.Context, id primitive.ObjectID) (*models.User, error) {
+	var u models.User
+	err := r.coll().FindOne(ctx, bson.M{"_id": id}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// NEW: ListByOrg returns all users belonging to a specific organization
+func (r *UserRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]models.User, error) {
+	cursor, err := r.coll().Find(ctx, bson.M{"organizationId": orgID})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var users []models.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// UpdateRole changes a user's role in the database
+func (r *UserRepo) UpdateRole(ctx context.Context, orgID, userID primitive.ObjectID, newRole string) error {
+	filter := bson.M{
+		"_id":            userID,
+		"organizationId": orgID, // Ensure they belong to this org
+	}
+	update := bson.M{"$set": bson.M{"role": newRole}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}
+
+// RemoveUser deletes a user from the organization
+func (r *UserRepo) RemoveUser(ctx context.Context, orgID, userID primitive.ObjectID) error {
+	filter := bson.M{
+		"_id":            userID,
+		"organizationId": orgID,
+	}
+	_, err := r.coll().DeleteOne(ctx, filter)
+	return err
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\routes\routes.go ===
+package routes
+
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/controllers"
+	"github.com/yourname/multi-tenant-pm/middleware"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"github.com/yourname/multi-tenant-pm/services"
+)
+
+func Setup(r *gin.Engine) {
+	// ==========================================
+	// 1. Initialize Dependencies (Wiring)
+	// ==========================================
+
+	// Auth
+	authSvc := &services.AuthService{Users: &repositories.UserRepo{}}
+	authCtrl := &controllers.AuthController{Svc: authSvc}
+
+	// Users
+	userRepo := &repositories.UserRepo{}
+	userCtrl := &controllers.UserController{Repo: userRepo}
+
+	// Projects
+	projectRepo := &repositories.ProjectRepo{}
+	projectCtrl := &controllers.ProjectController{Repo: projectRepo}
+
+	// Shared Repositories
+	activityRepo := &repositories.ActivityRepo{}
+	notificationRepo := &repositories.NotificationRepo{}
+	taskRepo := &repositories.TaskRepo{}
+
+	// Tasks
+	taskCtrl := &controllers.TaskController{
+		Repo:             taskRepo,
+		ActivityRepo:     activityRepo,
+		NotificationRepo: notificationRepo,
+	}
+
+	// Comments
+	commentCtrl := &controllers.CommentController{
+		Repo:             &repositories.CommentRepo{},
+		ActivityRepo:     activityRepo,
+		NotificationRepo: notificationRepo,
+		TaskRepo:         taskRepo,
+	}
+
+	// Activities
+	activityCtrl := &controllers.ActivityController{Repo: activityRepo}
+
+	// Notifications
+	notifCtrl := &controllers.NotificationController{Repo: notificationRepo}
+
+	// Analytics
+	analyticsCtrl := &controllers.AnalyticsController{}
+
+	// Team
+	teamCtrl := &controllers.TeamController{
+		UserRepo: userRepo,
+		InvRepo:  &repositories.InvitationRepo{},
+	}
+
+	// AI
+	aiCtrl := &controllers.AIController{
+		TaskRepo:    taskRepo,
+		UserRepo:    userRepo,
+		ProjectRepo: projectRepo,
+	}
+
+	// ==========================================
+	// 2. Define Routes
+	// ==========================================
+
+	api := r.Group("/api")
+	{
+		// --- PUBLIC ROUTES ---
+		api.POST("/auth/register", authCtrl.Register)
+		api.POST("/auth/login", authCtrl.Login)
+		api.POST("/invites/accept", teamCtrl.AcceptInvite)
+		api.GET("/ws", controllers.HandleWS)
+
+		// --- PROTECTED ROUTES (Requires JWT) ---
+		protected := api.Group("/")
+		protected.Use(middleware.AuthRequired())
+		{
+			// Auth Check
+			protected.GET("/me", func(c *gin.Context) {
+				c.JSON(200, gin.H{
+					"userId": c.GetString("userId"),
+					"orgId":  c.GetString("orgId"),
+					"role":   c.GetString("role"),
+				})
+			})
+
+			// Users
+			protected.GET("/users", userCtrl.ListMembers)
+
+			// Projects
+			projects := protected.Group("/projects")
+			{
+				projects.GET("", projectCtrl.List)
+				projects.POST("", middleware.RequireRole("owner", "admin", "manager"), projectCtrl.Create)
+			}
+
+			// Tasks
+			tasks := protected.Group("/projects/:projectId/tasks")
+			{
+				tasks.GET("", taskCtrl.ListByProject)
+				tasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Create)
+				tasks.PATCH("/:taskId/status", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.UpdateStatus)
+			}
+
+			// Subtasks
+			subtasks := protected.Group("/tasks/:taskId/subtasks")
+			{
+				subtasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.AddSubtask)
+				subtasks.PATCH("/:subtaskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.ToggleSubtask)
+			}
+
+			// My Tasks
+			protected.GET("/my-tasks", taskCtrl.ListMyTasks)
+
+			// Comments
+			comments := protected.Group("/tasks/:taskId/comments")
+			{
+				comments.GET("", commentCtrl.ListByTask)
+				comments.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), commentCtrl.Create)
+			}
+
+			// Activities
+			activities := protected.Group("/tasks/:taskId/activities")
+			{
+				activities.GET("", activityCtrl.ListByTask)
+			}
+
+			// Notifications
+			notifications := protected.Group("/notifications")
+			{
+				notifications.GET("", notifCtrl.List)
+				notifications.PATCH("/:id/read", notifCtrl.MarkAsRead)
+			}
+
+			// Analytics
+			protected.GET("/analytics", analyticsCtrl.GetDashboardStats)
+
+			// Team Management
+			protected.GET("/team", teamCtrl.ListMembers)
+			protected.POST("/invites", middleware.RequireRole("owner", "admin"), teamCtrl.Invite)
+			protected.PATCH("/team/:userId/role", middleware.RequireRole("owner", "admin"), teamCtrl.UpdateRole)
+			protected.DELETE("/team/:userId", middleware.RequireRole("owner", "admin"), teamCtrl.RemoveUser)
+
+			// AI
+			protected.POST("/ai/generate-task", aiCtrl.GenerateTask)
+			protected.POST("/ai/ask", aiCtrl.AskAI)
+		}
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\services\auth_service.go ===
+package services
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/models"
+	"github.com/yourname/multi-tenant-pm/repositories"
+	"github.com/yourname/multi-tenant-pm/utils"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type AuthService struct {
+	Users *repositories.UserRepo
+}
+
+type RegisterInput struct {
+	OrgName  string `json:"orgName" validate:"required,min=2"`
+	Slug     string `json:"slug" validate:"required,min=2"`
+	Name     string `json:"name" validate:"required"`
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required,min=6"`
+}
+
+type LoginInput struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
+}
+
+func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *models.User, error) {
+	existing, err := s.Users.FindByEmail(ctx, strings.ToLower(in.Email))
+	if err != nil {
+		return "", nil, err
+	}
+	if existing != nil {
+		return "", nil, errors.New("email already registered")
+	}
+
+	// 1) Create org
+	org := models.Organization{
+		Name:      in.OrgName,
+		Slug:      strings.ToLower(in.Slug),
+		CreatedAt: time.Now(),
+	}
+	res, err := config.Database.Collection("organizations").InsertOne(ctx, org)
+	if err != nil {
+		return "", nil, err
+	}
+	org.ID = res.InsertedID.(primitive.ObjectID)
+
+	// 2) Hash pw
+	hash, err := utils.HashPassword(in.Password)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// 3) Create owner user
+	user := &models.User{
+		OrganizationID: org.ID,
+		Name:           in.Name,
+		Email:          strings.ToLower(in.Email),
+		PasswordHash:   hash,
+		Role:           models.RoleOwner,
+	}
+	if err := s.Users.Create(ctx, user); err != nil {
+		return "", nil, err
+	}
+
+	// 4) Generate Token with orgName
+	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), org.Name, user.Role)
+	return token, user, err
+}
+
+func (s *AuthService) Login(ctx context.Context, in LoginInput) (string, *models.User, error) {
+	user, err := s.Users.FindByEmail(ctx, strings.ToLower(in.Email))
+	if err != nil {
+		return "", nil, err
+	}
+	if user == nil || !utils.CheckPassword(user.PasswordHash, in.Password) {
+		return "", nil, errors.New("invalid credentials")
+	}
+
+	// Fetch organization name for the token
+	var org models.Organization
+	config.Database.Collection("organizations").FindOne(ctx, bson.M{"_id": user.OrganizationID}).Decode(&org)
+
+	// Generate Token with orgName
+	token, err := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
+	return token, user, err
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\utils\hash.go ===
+package utils
+
+import "golang.org/x/crypto/bcrypt"
+
+func HashPassword(pw string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	return string(b), err
+}
+
+func CheckPassword(hash, pw string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\utils\jwt.go ===
+package utils
+
+import (
+	"errors"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type Claims struct {
+	UserID         string `json:"userId"`
+	OrganizationID string `json:"organizationId"`
+	OrgName        string `json:"orgName"` // <-- Added
+	Role           string `json:"role"`
+	jwt.RegisteredClaims
+}
+
+func GenerateToken(userID, orgID, orgName, role string) (string, error) {
+	hours, _ := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
+	if hours == 0 {
+		hours = 72
+	}
+	claims := Claims{
+		UserID:         userID,
+		OrganizationID: orgID,
+		OrgName:        orgName, // <-- Added
+		Role:           role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(hours) * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
+		SignedString([]byte(os.Getenv("JWT_SECRET")))
+}
+
+func ParseToken(tokenStr string) (*Claims, error) {
+	tok, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(os.Getenv("JWT_SECRET")), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := tok.Claims.(*Claims)
+	if !ok || !tok.Valid {
+		return nil, errors.New("invalid token")
+	}
+	return claims, nil
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\websocket\client.go ===
+package websocket
+
+import (
+	"log"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 512
+)
+
+type Client struct {
+	Hub    *Hub
+	Conn   *websocket.Conn
+	Send   chan []byte
+	OrgID  string // Used to broadcast only to the same company
+}
+
+func (c *Client) ReadPump() {
+	defer func() {
+		c.Hub.Unregister <- c
+		c.Conn.Close()
+	}()
+	c.Conn.SetReadLimit(maxMessageSize)
+	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	
+	for {
+		_, _, err := c.Conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("error: %v", err)
+			}
+			break
+		}
+	}
+}
+
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+	for {
+		select {
+		case message, ok := <-c.Send:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			w, err := c.Conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\websocket\hub.go ===
+package websocket
+
+import (
+	"log"
+	"sync"
+)
+
+type Hub struct {
+	Clients    map[*Client]bool
+	Broadcast  chan []byte
+	Register   chan *Client
+	Unregister chan *Client
+	mu         sync.Mutex
+}
+
+// Global hub instance
+var GlobalHub = &Hub{
+	Clients:    make(map[*Client]bool),
+	Broadcast:  make(chan []byte),
+	Register:   make(chan *Client),
+	Unregister: make(chan *Client),
+}
+
+func (h *Hub) Run() {
+	for {
+		select {
+		case client := <-h.Register:
+			h.mu.Lock()
+			h.Clients[client] = true
+			h.mu.Unlock()
+			log.Println("âœ… WebSocket Client Connected")
+		case client := <-h.Unregister:
+			h.mu.Lock()
+			if _, ok := h.Clients[client]; ok {
+				delete(h.Clients, client)
+				close(client.Send)
+			}
+			h.mu.Unlock()
+			log.Println("âŒ WebSocket Client Disconnected")
+		case message := <-h.Broadcast:
+			h.mu.Lock()
+			for client := range h.Clients {
+				select {
+				case client.Send <- message:
+				default:
+					close(client.Send)
+					delete(h.Clients, client)
+				}
+			}
+			h.mu.Unlock()
+		}
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\backend\main.go ===
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/yourname/multi-tenant-pm/config"
+	"github.com/yourname/multi-tenant-pm/routes"
+)
+
+func main() {
+	_ = godotenv.Load()
+
+	config.ConnectMongo()
+	config.ConnectRedis()
+
+	r := gin.Default()
+
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{os.Getenv("CLIENT_ORIGIN")},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
+
+	routes.Setup(r)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Println("ðŸš€ Listening on :" + port)
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal(err)
+	}
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\components\AIChatbot.jsx ===
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { MessageSquare, X, Send, Sparkles } from "lucide-react";
+
+export default function AIChatbot() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState([
+    {
+      role: "ai",
+      text: "Hi! I am your workspace assistant. Ask me anything about your projects or tasks.",
+    },
+  ]);
+
+  const askMutation = useMutation({
+    mutationFn: (q) => api.post("/ai/ask", { question: q }),
+    onSuccess: (res) => {
+      setMessages((prev) => [...prev, { role: "ai", text: res.data.answer }]);
+    },
+    onError: () => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text: "Sorry, I am having trouble connecting right now. Please try again.",
+        },
+      ]);
+    },
+  });
+
+  const handleSend = (e) => {
+    e.preventDefault();
+    if (!question.trim()) return;
+
+    // Add user message to UI
+    setMessages((prev) => [...prev, { role: "user", text: question }]);
+    askMutation.mutate(question);
+    setQuestion("");
+  };
+
+  return (
+    <div className="fixed bottom-6 right-6 z-50">
+      {/* Chat Window */}
+      {isOpen && (
+        <div className="bg-white w-80 h-96 rounded-xl shadow-2xl border border-slate-200 flex flex-col mb-4 animate-in slide-in-from-bottom-5">
+          <div className="bg-brand-600 text-white p-4 rounded-t-xl flex justify-between items-center">
+            <h3 className="font-bold flex items-center gap-2">
+              <Sparkles className="w-4 h-4" /> AI Assistant
+            </h3>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="hover:bg-brand-700 p-1 rounded"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-slate-50">
+            {messages.map((msg, i) => (
+              <div
+                key={i}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`max-w-[80%] p-2 rounded-lg text-sm ${msg.role === "user" ? "bg-brand-600 text-white rounded-br-none" : "bg-white border border-slate-200 text-slate-700 rounded-bl-none shadow-sm"}`}
+                >
+                  {msg.text}
+                </div>
+              </div>
+            ))}
+            {askMutation.isPending && (
+              <div className="text-xs text-slate-400 italic">
+                AI is thinking... (may take a minute on free tier)
+              </div>
+            )}
+          </div>
+
+          <form
+            onSubmit={handleSend}
+            className="p-3 border-t border-slate-200 bg-white rounded-b-xl flex gap-2"
+          >
+            <input
+              type="text"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask about tasks, projects..."
+              className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <button
+              type="submit"
+              disabled={askMutation.isPending || !question.trim()}
+              className="bg-brand-600 text-white p-2 rounded-lg hover:bg-brand-700 disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Floating Button */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="bg-brand-600 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:bg-brand-700 transition-transform hover:scale-105"
+      >
+        <MessageSquare className="w-6 h-6" />
+      </button>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\components\Layout.jsx ===
+import { useState } from "react";
+import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { useSelector, useDispatch } from "react-redux";
+import { logout } from "../store/authSlice";
+import {
+  LayoutDashboard,
+  FolderKanban,
+  CheckSquare,
+  Users,
+  LogOut,
+  Bell,
+  Check,
+  Layers,
+} from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+
+export default function Layout() {
+  const { user, token } = useSelector((state) => state.auth); // <-- Get token
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+
+  // Decode JWT to get the dynamic Organization Name
+  let orgName = "Your Workspace";
+  if (token) {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      orgName = payload.orgName || "Your Workspace";
+    } catch (e) {
+      console.error("Failed to decode token");
+    }
+  }
+
+  // Fetch Notifications
+  const { data: notifications } = useQuery({
+    queryKey: ["notifications"],
+    queryFn: async () => {
+      const res = await api.get("/notifications");
+      return res.data;
+    },
+    refetchInterval: 30000,
+  });
+
+  const unreadCount = notifications?.filter((n) => !n.isRead).length || 0;
+
+  const markReadMutation = useMutation({
+    mutationFn: (id) => api.patch(`/notifications/${id}/read`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+
+  const handleLogout = () => {
+    dispatch(logout());
+    navigate("/login");
+  };
+
+  const navItems = [
+    { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+    { name: "Projects", path: "/projects", icon: FolderKanban },
+    { name: "My Tasks", path: "/tasks", icon: CheckSquare },
+    { name: "Team", path: "/team", icon: Users },
+  ];
+
+  return (
+    <div className="min-h-screen flex bg-slate-50">
+      {/* Sidebar */}
+      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col">
+        <div className="h-16 flex items-center gap-2 px-6 border-b border-slate-200">
+          <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center shadow-sm">
+            <Layers className="w-5 h-5 text-white" />
+          </div>
+          <span className="text-xl font-bold text-slate-900">TaskFlow</span>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? "bg-brand-50 text-brand-700"
+                    : "text-slate-600 hover:bg-slate-100"
+                }`
+              }
+            >
+              <item.icon className="w-4 h-4" />
+              {item.name}
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="p-4 border-t border-slate-200">
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-3 px-3 py-2 w-full rounded-lg text-sm font-medium text-slate-600 hover:bg-red-50 hover:text-red-600 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            Log out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col">
+        {/* Topbar */}
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8">
+          <div className="text-sm text-slate-500">
+            Workspace:{" "}
+            <span className="font-semibold text-slate-900">{orgName}</span>
+          </div>
+
+          <div className="flex items-center gap-5">
+            {/* Notification Bell */}
+            <div className="relative">
+              <button
+                onClick={() => setIsNotifOpen(!isNotifOpen)}
+                className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors relative"
+              >
+                <Bell className="w-5 h-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                )}
+              </button>
+
+              {/* Notification Dropdown */}
+              {isNotifOpen && (
+                <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-slate-200 z-50 animate-in fade-in slide-in-from-top-2">
+                  <div className="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
+                    <h3 className="font-semibold text-slate-900 text-sm">
+                      Notifications
+                    </h3>
+                    <span className="text-xs text-slate-500">
+                      {unreadCount} unread
+                    </span>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto">
+                    {notifications?.length === 0 ? (
+                      <p className="p-4 text-sm text-slate-500 text-center">
+                        You're all caught up!
+                      </p>
+                    ) : (
+                      notifications?.map((notif) => (
+                        <div
+                          key={notif.id}
+                          className={`p-4 border-b border-slate-50 flex gap-3 transition-colors ${notif.isRead ? "opacity-60 bg-white" : "bg-brand-50/30"}`}
+                        >
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-slate-900">
+                              {notif.title}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {notif.message}
+                            </p>
+                          </div>
+                          {!notif.isRead && (
+                            <button
+                              onClick={() => markReadMutation.mutate(notif.id)}
+                              className="text-brand-600 hover:text-brand-800 self-start mt-1"
+                              title="Mark as read"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* User Profile */}
+            <div className="flex items-center gap-3 border-l border-slate-200 pl-5">
+              <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-sm">
+                {user?.name?.charAt(0)}
+              </div>
+              <span className="text-sm font-medium text-slate-700">
+                {user?.name}
+              </span>
+            </div>
+          </div>
+        </header>
+
+        {/* Page Content */}
+        <main className="flex-1 p-8 overflow-y-auto">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\components\ProtectedRoute.jsx ===
+import { Navigate, Outlet } from "react-router-dom";
+import { useSelector } from "react-redux";
+
+export default function ProtectedRoute() {
+  const isAuthenticated = useSelector((state) => state.auth.isAuthenticated);
+
+  // If not logged in, redirect to login page
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // If logged in, render the child routes (e.g., Dashboard)
+  return <Outlet />;
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\components\TaskDrawer.jsx ===
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+import { X, Send, User, Clock } from "lucide-react";
+import { useSelector } from "react-redux";
+
+export default function TaskDrawer({ task, projectId, members, onClose }) {
+  const queryClient = useQueryClient();
+  const { user } = useSelector((state) => state.auth);
+  const [content, setContent] = useState("");
+  const [newSubtask, setNewSubtask] = useState("");
+
+  // 1. Create local state for subtasks to make the UI instant
+  const [localSubtasks, setLocalSubtasks] = useState(task.subtasks || []);
+
+  // 2. Sync local state if the parent task updates
+  useEffect(() => {
+    setLocalSubtasks(task.subtasks || []);
+  }, [task.subtasks]);
+
+  const { data: comments, isLoading: isLoadingComments } = useQuery({
+    queryKey: ["comments", task.id],
+    queryFn: async () => {
+      const res = await api.get(`/tasks/${task.id}/comments`);
+      return res.data;
+    },
+  });
+
+  const { data: activities, isLoading: isLoadingActivities } = useQuery({
+    queryKey: ["activities", task.id],
+    queryFn: async () => {
+      const res = await api.get(`/tasks/${task.id}/activities`);
+      return res.data;
+    },
+  });
+
+  const createCommentMutation = useMutation({
+    mutationFn: (newComment) =>
+      api.post(`/tasks/${task.id}/comments`, newComment),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["comments", task.id] });
+      queryClient.invalidateQueries({ queryKey: ["activities", task.id] });
+      setContent("");
+      toast.success("Comment added!");
+    },
+    onError: () => toast.error("Failed to add comment"),
+  });
+
+  // 3. Add Subtask Mutation (Optimistic)
+  const addSubtaskMutation = useMutation({
+    mutationFn: (title) => api.post(`/tasks/${task.id}/subtasks`, { title }),
+    onMutate: async (newTitle) => {
+      await queryClient.cancelQueries({ queryKey: ["tasks"] });
+      const newSubtaskObj = {
+        id: `temp-${Date.now()}`,
+        title: newTitle,
+        completed: false,
+      };
+      setLocalSubtasks((prev) => [...prev, newSubtaskObj]);
+      setNewSubtask("");
+      return { newSubtaskObj };
+    },
+    onError: (err, newTitle, context) => {
+      setLocalSubtasks((prev) =>
+        prev.filter((s) => s.id !== context.newSubtaskObj.id),
+      );
+      toast.error("Failed to add subtask");
+    },
+    onSuccess: (res) => {
+      setLocalSubtasks((prev) =>
+        prev.map((s) => (s.id.startsWith("temp-") ? res.data : s)),
+      );
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      toast.success("Subtask added!");
+    },
+  });
+
+  // 4. Toggle Subtask Mutation (Only ONE definition here)
+  const toggleSubtaskMutation = useMutation({
+    mutationFn: ({ subtaskId, completed }) =>
+      api.patch(`/tasks/${task.id}/subtasks/${subtaskId}`, { completed }),
+    onSuccess: (_, variables) => {
+      setLocalSubtasks((prev) =>
+        prev.map((s) =>
+          s.id === variables.subtaskId
+            ? { ...s, completed: variables.completed }
+            : s,
+        ),
+      );
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: () => {
+      toast.error("Failed to update subtask");
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!content.trim()) return;
+    createCommentMutation.mutate({ content });
+  };
+
+  const assignee = members?.find((m) => m.id === task.assigneeId);
+  const isOverdue =
+    task.dueDate &&
+    new Date(task.dueDate) < new Date() &&
+    task.status !== "done";
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity">
+      <div className="w-full max-w-lg bg-white h-full shadow-2xl flex flex-col animate-slide-in">
+        {/* Header */}
+        <div className="p-6 border-b border-slate-200 flex justify-between items-start">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900">{task.title}</h2>
+            <div className="flex items-center gap-4 mt-3 text-sm text-slate-500">
+              <span className="flex items-center gap-1">
+                <User className="w-4 h-4" />
+                {assignee ? assignee.name : "Unassigned"}
+              </span>
+              <span
+                className={`font-bold uppercase px-2 py-1 rounded-md text-[10px] ${
+                  task.priority === "high"
+                    ? "bg-red-100 text-red-700"
+                    : task.priority === "medium"
+                      ? "bg-yellow-100 text-yellow-700"
+                      : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {task.priority}
+              </span>
+              {task.dueDate && (
+                <span
+                  className={`flex items-center gap-1 font-medium ${isOverdue ? "text-red-600" : ""}`}
+                >
+                  <Clock className="w-4 h-4" />
+                  {new Date(task.dueDate).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+          >
+            <X className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {/* Description */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 mb-2">
+              Description
+            </h3>
+            <p className="text-sm text-slate-700 bg-slate-50 p-4 rounded-lg">
+              {task.description || "No description provided."}
+            </p>
+          </div>
+
+          {/* Subtasks */}
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-sm font-semibold text-slate-900">Subtasks</h3>
+              <span className="text-xs text-slate-500">
+                {localSubtasks.filter((s) => s.completed).length} /{" "}
+                {localSubtasks.length} done
+              </span>
+            </div>
+
+            <div className="space-y-2 mb-3">
+              {localSubtasks.map((subtask) => (
+                <label
+                  key={subtask.id}
+                  className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors"
+                >
+                  <input
+                    type="checkbox"
+                    checked={subtask.completed}
+                    onChange={(e) =>
+                      toggleSubtaskMutation.mutate({
+                        subtaskId: subtask.id,
+                        completed: e.target.checked,
+                      })
+                    }
+                    className="w-4 h-4 text-brand-600 rounded border-slate-300 focus:ring-brand-500"
+                  />
+                  <span
+                    className={`text-sm ${subtask.completed ? "line-through text-slate-400" : "text-slate-700"}`}
+                  >
+                    {subtask.title}
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newSubtask.trim()) addSubtaskMutation.mutate(newSubtask);
+              }}
+              className="flex gap-2"
+            >
+              <input
+                type="text"
+                value={newSubtask}
+                onChange={(e) => setNewSubtask(e.target.value)}
+                placeholder="Add a subtask..."
+                className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+              />
+              <button
+                type="submit"
+                disabled={!newSubtask.trim()}
+                className="text-sm font-medium text-brand-600 hover:text-brand-700 px-2 disabled:opacity-50"
+              >
+                Add
+              </button>
+            </form>
+          </div>
+
+          {/* Activity */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 mb-4">
+              Activity History
+            </h3>
+            <div className="space-y-4">
+              {isLoadingActivities ? (
+                <p className="text-sm text-slate-400">Loading activity...</p>
+              ) : activities?.length === 0 ? (
+                <p className="text-sm text-slate-400">No activity yet.</p>
+              ) : (
+                activities?.map((activity) => {
+                  const activityUser = members?.find(
+                    (m) => m.id === activity.userId,
+                  );
+                  return (
+                    <div key={activity.id} className="flex gap-3 text-sm">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">
+                        {activityUser?.name.charAt(0) || "U"}
+                      </div>
+                      <div>
+                        <span className="font-medium text-slate-900">
+                          {activityUser?.name || "User"}
+                        </span>
+                        <span className="text-slate-500">
+                          {" "}
+                          {activity.details}
+                        </span>
+                        <p className="text-[10px] text-slate-400">
+                          {new Date(activity.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Comments */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
+              Comments{" "}
+              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-xs">
+                {comments?.length || 0}
+              </span>
+            </h3>
+            <div className="space-y-4 mb-6">
+              {isLoadingComments ? (
+                <p className="text-sm text-slate-400">Loading comments...</p>
+              ) : comments?.length === 0 ? (
+                <p className="text-sm text-slate-400">
+                  No comments yet. Start the conversation!
+                </p>
+              ) : (
+                comments?.map((comment) => {
+                  const commentUser = members?.find(
+                    (m) => m.id === comment.userId,
+                  );
+                  return (
+                    <div key={comment.id} className="flex gap-3">
+                      <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-xs shrink-0">
+                        {commentUser?.name.charAt(0) || "U"}
+                      </div>
+                      <div className="flex-1 bg-slate-50 p-3 rounded-lg rounded-tl-none">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-semibold text-slate-700">
+                            {commentUser?.name || "User"}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            {new Date(comment.createdAt).toLocaleTimeString(
+                              [],
+                              { hour: "2-digit", minute: "2-digit" },
+                            )}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-700">
+                          {comment.content}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Input */}
+        <div className="p-4 border-t border-slate-200 bg-white">
+          <form onSubmit={handleSubmit} className="flex gap-2">
+            <input
+              type="text"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Write a comment..."
+              className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={createCommentMutation.isPending || !content.trim()}
+              className="bg-brand-600 text-white p-2 rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\context\WebSocketContext.jsx ===
+import { createContext, useEffect, useRef } from "react";
+import { useSelector } from "react-redux";
+import { useQueryClient } from "@tanstack/react-query";
+
+export const WebSocketContext = createContext(null);
+
+export function WebSocketProvider({ children }) {
+  const { token, isAuthenticated } = useSelector((state) => state.auth);
+  const queryClient = useQueryClient();
+  const ws = useRef(null);
+
+  useEffect(() => {
+    if (!isAuthenticated || !token) {
+      if (ws.current) ws.current.close();
+      return;
+    }
+
+    // 1. Determine the correct WebSocket URL
+    // If we are in production, replace http/https with ws/wss
+    const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080/api";
+    const wsUrl = apiUrl.replace(/^http/, "ws"); // turns http:// into ws://, https:// into wss://
+
+    // 2. Connect
+    ws.current = new WebSocket(`${wsUrl}/ws?token=${token}`);
+
+    ws.current.onopen = () => {
+      console.log("âœ… WebSocket Connected");
+    };
+
+    ws.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "NEW_COMMENT") {
+        console.log("ðŸ“© Real-time update received!");
+        // Instantly refetch comments and activities
+        queryClient.invalidateQueries({ queryKey: ["comments", data.taskId] });
+        queryClient.invalidateQueries({
+          queryKey: ["activities", data.taskId],
+        });
+      }
+    };
+
+    ws.current.onclose = () => {
+      console.log("âŒ WebSocket Disconnected");
+    };
+
+    return () => {
+      if (ws.current) ws.current.close();
+    };
+  }, [isAuthenticated, token, queryClient]);
+
+  return (
+    <WebSocketContext.Provider value={ws.current}>
+      {children}
+    </WebSocketContext.Provider>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\lib\api.js ===
+import axios from 'axios';
+import { store } from '../store';
+import { logout } from '../store/authSlice';
+
+export const api = axios.create({
+    baseURL: import.meta.env.VITE_API_URL ||'http://localhost:8080/api',
+    headers: {
+        'Content-Type': 'application/json',
+    },
+});
+
+// Request Interceptor: Runs before every request
+api.interceptors.request.use(
+    (config) => {
+        // Get token from Redux store
+        const token = store.getState().auth.token;
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+    },
+    (error) => Promise.reject(error)
+);
+
+// Response Interceptor: Runs after every response
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        // If backend returns 401 Unauthorized (token expired/invalid)
+        if (error.response?.status === 401) {
+            store.dispatch(logout());
+            window.location.href = '/login';
+        }
+        return Promise.reject(error);
+    }
+);
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\AcceptInvite.jsx ===
+import { useState } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { useDispatch } from "react-redux";
+import { setCredentials } from "../store/authSlice";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+
+export default function AcceptInvite() {
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get("token");
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
+  const [isLoading, setIsLoading] = useState(false);
+  const [formData, setFormData] = useState({ name: "", password: "" });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const res = await api.post("/invites/accept", { ...formData, token });
+      dispatch(setCredentials({ user: res.data.user, token: res.data.token }));
+      toast.success("Welcome to the team!");
+      navigate("/dashboard");
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to join team");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (!token)
+    return (
+      <div className="p-8 text-center text-red-500">Invalid invite link.</div>
+    );
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-sm border border-slate-200">
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold text-slate-900">Join the Team</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Create your account to accept the invitation
+          </p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Your Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              required
+              type="text"
+              value={formData.name}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+              placeholder="John Doe"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Password <span className="text-red-500">*</span>
+            </label>
+            <input
+              required
+              type="password"
+              value={formData.password}
+              onChange={(e) =>
+                setFormData({ ...formData, password: e.target.value })
+              }
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+              minLength={6}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full bg-brand-600 text-white py-2 rounded-lg font-medium hover:bg-brand-700 disabled:opacity-70"
+          >
+            {isLoading ? "Joining..." : "Accept Invitation"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\Dashboard.jsx ===
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { useSelector } from "react-redux";
+import {
+  FolderKanban,
+  CheckSquare,
+  Clock,
+  Zap,
+  ArrowRight,
+  CheckCircle2,
+  MessageSquare,
+  Plus,
+} from "lucide-react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
+
+export default function Dashboard() {
+  const { user } = useSelector((state) => state.auth);
+
+  const { data: stats, isLoading } = useQuery({
+    queryKey: ["analytics"],
+    queryFn: async () => {
+      const res = await api.get("/analytics");
+      return res.data;
+    },
+  });
+
+  const recentActivities = [
+    {
+      id: 1,
+      type: "done",
+      text: 'Task "Frontend UI" marked as Done',
+      time: "2 hours ago",
+    },
+    {
+      id: 2,
+      type: "comment",
+      text: 'Kumar commented on "API Integration"',
+      time: "3 hours ago",
+    },
+    {
+      id: 3,
+      type: "created",
+      text: 'New task "Setup Database" created',
+      time: "5 hours ago",
+    },
+  ];
+
+  if (isLoading)
+    return <div className="p-8 text-slate-500">Loading dashboard...</div>;
+
+  const totalTasks = stats?.totalTasks || 0;
+  const completedTasks =
+    stats?.tasksByStatus?.find((s) => s.name === "Done")?.value || 0;
+
+  const getPercentage = (val) => {
+    if (totalTasks === 0) return 0;
+    return Math.round((val / totalTasks) * 100);
+  };
+
+  return (
+    <div className="min-h-full -m-8 p-8 bg-dashboard-gradient relative overflow-hidden">
+      <div className="flex justify-between items-start mb-8 relative z-10">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-2">
+            Good morning, {user?.name}! <span className="text-3xl">ðŸ‘‹</span>
+          </h1>
+          <p className="text-slate-500 mt-2 text-lg">
+            Here's what's happening in your workspace today.
+          </p>
+        </div>
+        <button className="flex items-center gap-2 bg-white/60 backdrop-blur-sm border border-slate-200 px-4 py-2 rounded-xl text-sm font-medium text-slate-700 shadow-sm hover:bg-white transition-colors">
+          <Clock className="w-4 h-4 text-slate-500" /> This Month
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8 relative z-10">
+        <div className="card-gradient-blue p-6 rounded-2xl soft-shadow border border-blue-100/50 flex items-center gap-5">
+          <div className="w-14 h-14 rounded-xl bg-white shadow-sm flex items-center justify-center text-blue-500">
+            <FolderKanban className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600">Total Projects</p>
+            <h3 className="text-3xl font-bold text-slate-900 mt-1">
+              {stats?.totalProjects || 0}
+            </h3>
+          </div>
+        </div>
+
+        <div className="card-gradient-green p-6 rounded-2xl soft-shadow border border-green-100/50 flex items-center gap-5">
+          <div className="w-14 h-14 rounded-xl bg-white shadow-sm flex items-center justify-center text-green-500">
+            <CheckSquare className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600">Total Tasks</p>
+            <h3 className="text-3xl font-bold text-slate-900 mt-1">
+              {totalTasks}
+            </h3>
+          </div>
+        </div>
+
+        <div className="card-gradient-orange p-6 rounded-2xl soft-shadow border border-orange-100/50 flex items-center gap-5">
+          <div className="w-14 h-14 rounded-xl bg-white shadow-sm flex items-center justify-center text-orange-500">
+            <Clock className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600">Completed</p>
+            <h3 className="text-3xl font-bold text-slate-900 mt-1">
+              {completedTasks}
+            </h3>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 relative z-10">
+        <div className="lg:col-span-2 bg-white p-6 rounded-2xl soft-shadow border border-slate-100">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <span className="w-2 h-5 bg-brand-500 rounded-full inline-block"></span>{" "}
+              Task Distribution
+            </h3>
+          </div>
+
+          <div className="flex flex-col md:flex-row items-center justify-center gap-10">
+            <div className="relative w-64 h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={stats?.tasksByStatus || []}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={80}
+                    outerRadius={100}
+                    paddingAngle={2}
+                    dataKey="value"
+                    stroke="none"
+                  >
+                    {stats?.tasksByStatus?.map((entry, index) => (
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={
+                          entry.name === "To Do"
+                            ? "#94a3b8"
+                            : entry.name === "In Progress"
+                              ? "#3b82f6"
+                              : entry.name === "Under Review"
+                                ? "#f59e0b" // <-- Added
+                                : "#22c55e"
+                        }
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-3xl font-bold text-slate-900">
+                  {totalTasks}
+                </span>
+                <span className="text-sm text-slate-500">Total Tasks</span>
+              </div>
+            </div>
+
+            <div className="space-y-5 flex-1 max-w-50">
+              {stats?.tasksByStatus?.map((status) => (
+                <div
+                  key={status.name}
+                  className="flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{
+                        backgroundColor:
+                          status.name === "To Do"
+                            ? "#94a3b8"
+                            : status.name === "In Progress"
+                              ? "#3b82f6"
+                              : status.name === "Under Review"
+                                ? "#f59e0b" // <-- Added
+                                : "#22c55e",
+                      }}
+                    ></div>
+                    <span className="text-slate-600 font-medium">
+                      {status.name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <span className="font-bold text-slate-900">
+                      {status.value}
+                    </span>
+                    <span className="text-sm text-slate-400 w-10 text-right">
+                      {getPercentage(status.value)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-2xl soft-shadow border border-slate-100">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <Zap className="w-5 h-5 text-brand-500" /> Recent Activity
+            </h3>
+            <a
+              href="#"
+              className="text-sm font-medium text-brand-600 hover:text-brand-700 flex items-center gap-1"
+            >
+              View All <ArrowRight className="w-4 h-4" />
+            </a>
+          </div>
+
+          <div className="relative border-l border-slate-200 ml-3 space-y-8 pb-4">
+            {recentActivities.map((activity) => (
+              <div key={activity.id} className="relative pl-6">
+                <div
+                  className={`absolute -left-3 top-1 w-6 h-6 rounded-full flex items-center justify-center border-2 border-white shadow-sm
+                  ${
+                    activity.type === "done"
+                      ? "bg-green-100 text-green-600"
+                      : activity.type === "comment"
+                        ? "bg-purple-100 text-purple-600"
+                        : "bg-blue-100 text-blue-600"
+                  }`}
+                >
+                  {activity.type === "done" ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : activity.type === "comment" ? (
+                    <MessageSquare className="w-3.5 h-3.5" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5" />
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-sm text-slate-700">{activity.text}</p>
+                  <p className="text-xs text-slate-400 mt-1">{activity.time}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\Login.jsx ===
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { Link, useNavigate } from "react-router-dom";
+import { useDispatch } from "react-redux";
+import { setCredentials } from "../store/authSlice";
+import { api } from "../lib/api";
+import { toast } from "sonner"; // We installed sonner earlier
+
+// Zod Validation Schema
+const loginSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(1, "Password is required"),
+});
+
+export default function Login() {
+  const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(loginSchema),
+  });
+
+  const onSubmit = async (data) => {
+    setIsLoading(true);
+    try {
+      const response = await api.post("/auth/login", data);
+
+      // Save to Redux
+      dispatch(
+        setCredentials({
+          user: response.data.user,
+          token: response.data.token,
+        }),
+      );
+
+      toast.success("Logged in successfully");
+      navigate("/dashboard");
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Login failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-sm border border-slate-200">
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold text-slate-900">Welcome back</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Enter your details to access your workspace
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Email <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("email")}
+              type="email"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="you@company.com"
+            />
+            {errors.email && (
+              <p className="text-red-500 text-xs mt-1">
+                {errors.email.message}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Password <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("password")}
+              type="password"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+            />
+            {errors.password && (
+              <p className="text-red-500 text-xs mt-1">
+                {errors.password.message}
+              </p>
+            )}
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full bg-brand-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-70 transition-colors"
+          >
+            {isLoading ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-slate-500 mt-6">
+          Want to create an organization?{" "}
+          <Link
+            to="/register"
+            className="text-brand-600 font-medium hover:underline"
+          >
+            Click here
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\MyTasks.jsx ===
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { Link } from "react-router-dom";
+import { CheckCircle2, Circle, Clock, LayoutList } from "lucide-react";
+
+export default function MyTasks() {
+  const { data: tasks, isLoading } = useQuery({
+    queryKey: ["my-tasks"],
+    queryFn: async () => {
+      const res = await api.get("/my-tasks");
+      return res.data;
+    },
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: ["projects"],
+    queryFn: async () => {
+      const res = await api.get("/projects");
+      return res.data;
+    },
+  });
+
+  if (isLoading)
+    return <div className="p-8 text-slate-500">Loading your tasks...</div>;
+
+  const getProjectName = (projectId) => {
+    return projects?.find((p) => p.id === projectId)?.name || "Unknown Project";
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+          <LayoutList className="w-6 h-6 text-brand-600" /> My Tasks
+        </h1>
+        <p className="text-slate-500 mt-1">
+          All tasks currently assigned to you across all projects.
+        </p>
+      </div>
+
+      {tasks?.length === 0 ? (
+        <div className="text-center py-20 bg-white rounded-xl border border-slate-200 border-dashed">
+          <CheckCircle2 className="w-12 h-12 text-green-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-slate-900">
+            You're all caught up!
+          </h3>
+          <p className="text-slate-500">
+            You have no tasks assigned to you right now.
+          </p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
+                <th className="p-4 font-medium">Task</th>
+                <th className="p-4 font-medium">Project</th>
+                <th className="p-4 font-medium">Status</th>
+                <th className="p-4 font-medium">Priority</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks?.map((task) => (
+                <tr
+                  key={task.id}
+                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
+                >
+                  <td className="p-4">
+                    <Link
+                      to={`/projects/${task.projectId}`}
+                      className="font-medium text-slate-900 hover:text-brand-600"
+                    >
+                      {task.title}
+                    </Link>
+                    <p className="text-xs text-slate-500 mt-1 line-clamp-1">
+                      {task.description}
+                    </p>
+                  </td>
+                  <td className="p-4 text-sm text-slate-600">
+                    {getProjectName(task.projectId)}
+                  </td>
+                  <td className="p-4">
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium capitalize ${
+                        task.status === "done"
+                          ? "bg-green-100 text-green-700"
+                          : task.status === "under_review"
+                            ? "bg-amber-100 text-amber-700" // <-- Added
+                            : task.status === "in_progress"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {task.status === "done" ? (
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      ) : task.status === "in_progress" ? (
+                        <Clock className="w-3.5 h-3.5" />
+                      ) : task.status === "under_review" ? (
+                        <Clock className="w-3.5 h-3.5" /> // <-- Added
+                      ) : (
+                        <Circle className="w-3.5 h-3.5" />
+                      )}
+                      {task.status.replace("_", " ")}
+                    </span>
+                  </td>
+                  <td className="p-4">
+                    <span
+                      className={`text-[10px] font-bold uppercase px-2 py-1 rounded-md ${
+                        task.priority === "high"
+                          ? "bg-red-100 text-red-700"
+                          : task.priority === "medium"
+                            ? "bg-yellow-100 text-yellow-700"
+                            : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      {task.priority}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\ProjectBoard.jsx ===
+import { useState, useEffect } from "react";
+import { useParams, Link } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSelector } from "react-redux";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+import {
+  ArrowLeft,
+  Plus,
+  MoreHorizontal,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Sparkles,
+} from "lucide-react";
+import TaskDrawer from "../components/TaskDrawer";
+
+const COLUMNS = [
+  { id: "todo", title: "To Do" },
+  { id: "in_progress", title: "In Progress" },
+  { id: "under_review", title: "Under Review" },
+  { id: "done", title: "Done" },
+];
+
+export default function ProjectBoard() {
+  const { projectId } = useParams();
+  const queryClient = useQueryClient();
+  const { user } = useSelector((state) => state.auth);
+
+  // Standard Modal States
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [formData, setFormData] = useState({
+    title: "",
+    description: "",
+    priority: "medium",
+    assigneeId: "",
+    dueDate: "",
+  });
+
+  // AI Modal States
+  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+
+  // Search, Filter, Pagination States
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterPriority, setFilterPriority] = useState("");
+  const [sortBy, setSortBy] = useState("newest");
+  const [page, setPage] = useState(1);
+  const limit = 10;
+
+  // Debounce Effect
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Fetch Tasks
+  const {
+    data: response,
+    isLoading,
+    isFetching,
+  } = useQuery({
+    queryKey: [
+      "tasks",
+      projectId,
+      debouncedSearch,
+      filterStatus,
+      filterPriority,
+      sortBy,
+      page,
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        search: debouncedSearch,
+        status: filterStatus,
+        priority: filterPriority,
+        sort: sortBy,
+        page: page.toString(),
+        limit: limit.toString(),
+      });
+      const res = await api.get(
+        `/projects/${projectId}/tasks?${params.toString()}`,
+      );
+      return res.data;
+    },
+    placeholderData: (previousData) => previousData,
+  });
+
+  const tasks = response?.tasks || [];
+  const totalCount = response?.totalCount || 0;
+  const totalPages = Math.ceil(totalCount / limit);
+
+  // Fetch Members
+  const { data: members } = useQuery({
+    queryKey: ["users"],
+    queryFn: async () => {
+      const res = await api.get("/users");
+      return res.data;
+    },
+  });
+
+  // Mutations
+  const createMutation = useMutation({
+    mutationFn: (newTask) => api.post(`/projects/${projectId}/tasks`, newTask),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+      toast.success("Task created!");
+      setIsModalOpen(false);
+      setFormData({
+        title: "",
+        description: "",
+        priority: "medium",
+        assigneeId: "",
+        dueDate: "",
+      });
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to create task"),
+  });
+
+  const updateStatusMutation = useMutation({
+    mutationFn: ({ taskId, status }) =>
+      api.patch(`/projects/${projectId}/tasks/${taskId}/status`, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+      toast.success("Task moved!");
+    },
+    onError: () => toast.error("Failed to move task"),
+  });
+
+  // AI Mutation
+  const aiMutation = useMutation({
+    mutationFn: (prompt) =>
+      api.post("/ai/generate-task", { prompt, projectId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+      toast.success("AI successfully created the task!");
+      setIsAIModalOpen(false);
+      setAiPrompt("");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "AI failed to generate task"),
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    createMutation.mutate(formData);
+  };
+
+  if (isLoading && !response)
+    return <div className="p-8 text-slate-500">Loading board...</div>;
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-6">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/projects"
+            className="p-2 hover:bg-slate-200 rounded-lg transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5 text-slate-600" />
+          </Link>
+          <h1 className="text-2xl font-bold text-slate-900">Project Board</h1>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => setIsAIModalOpen(true)}
+            className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors"
+          >
+            <Sparkles className="w-4 h-4" /> AI Magic
+          </button>
+
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> New Task
+          </button>
+        </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap gap-4 mb-6 bg-white p-3 rounded-xl border border-slate-200 shadow-sm relative">
+        <div className="flex-1 relative min-w-50">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search tasks by title..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+        </div>
+
+        <select
+          value={filterStatus}
+          onChange={(e) => {
+            setFilterStatus(e.target.value);
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          <option value="">All Categories</option>
+          <option value="todo">To Do</option>
+          <option value="in_progress">In Progress</option>
+          <option value="under_review">Under Review</option>
+          <option value="done">Done</option>
+        </select>
+
+        <select
+          value={filterPriority}
+          onChange={(e) => {
+            setFilterPriority(e.target.value);
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          <option value="">All Priorities</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+
+        <select
+          value={sortBy}
+          onChange={(e) => {
+            setSortBy(e.target.value);
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+        </select>
+
+        {isFetching && (
+          <div className="absolute -bottom-6 right-2 text-xs font-medium text-brand-600 animate-pulse">
+            Updating...
+          </div>
+        )}
+      </div>
+
+      {/* Kanban Columns */}
+      <div className="flex-1 flex gap-6 overflow-x-auto pb-4">
+        {COLUMNS.map((col) => {
+          const columnTasks = tasks.filter((t) => t.status === col.id);
+
+          return (
+            <div
+              key={col.id}
+              className="w-80 shrink-0 flex flex-col bg-slate-100 rounded-xl p-4"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-semibold text-slate-700">
+                  {col.title}{" "}
+                  <span className="text-slate-400 text-sm ml-1">
+                    {columnTasks.length}
+                  </span>
+                </h3>
+                <MoreHorizontal className="w-5 h-5 text-slate-400" />
+              </div>
+
+              <div className="flex-1 space-y-3 overflow-y-auto">
+                {columnTasks.map((task) => {
+                  const isOverdue =
+                    task.dueDate &&
+                    new Date(task.dueDate) < new Date() &&
+                    task.status !== "done";
+
+                  return (
+                    <div
+                      key={task.id}
+                      onClick={() => setSelectedTask(task)}
+                      className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 hover:border-brand-400 transition-colors group cursor-pointer"
+                    >
+                      <h4 className="font-medium text-slate-900 mb-2">
+                        {task.title}
+                      </h4>
+                      <p className="text-xs text-slate-500 line-clamp-2 mb-3">
+                        {task.description}
+                      </p>
+
+                      {task.dueDate && (
+                        <div
+                          className={`text-xs mb-3 flex items-center gap-1 font-medium ${isOverdue ? "text-red-600" : "text-slate-500"}`}
+                        >
+                          <Clock className="w-3 h-3" />
+                          {isOverdue ? "Overdue: " : "Due: "}
+                          {new Date(task.dueDate).toLocaleDateString()}
+                        </div>
+                      )}
+
+                      {task.subtasks && task.subtasks.length > 0 && (
+                        <div className="mb-3">
+                          <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                            <span>Subtasks</span>
+                            <span>
+                              {task.subtasks.filter((s) => s.completed).length}/
+                              {task.subtasks.length}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-1.5">
+                            <div
+                              className="bg-brand-500 h-1.5 rounded-full"
+                              style={{
+                                width: `${(task.subtasks.filter((s) => s.completed).length / task.subtasks.length) * 100}%`,
+                              }}
+                            ></div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between mt-4">
+                        <span
+                          className={`text-[10px] font-bold uppercase px-2 py-1 rounded-md ${
+                            task.priority === "high"
+                              ? "bg-red-100 text-red-700"
+                              : task.priority === "medium"
+                                ? "bg-yellow-100 text-yellow-700"
+                                : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {task.priority}
+                        </span>
+
+                        <div className="flex items-center gap-2">
+                          {task.assigneeId && (
+                            <div className="flex items-center gap-1.5">
+                              <div
+                                className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-bold"
+                                title={
+                                  members?.find((m) => m.id === task.assigneeId)
+                                    ?.name || "Assigned"
+                                }
+                              >
+                                {members
+                                  ?.find((m) => m.id === task.assigneeId)
+                                  ?.name.charAt(0) || "U"}
+                              </div>
+                            </div>
+                          )}
+
+                          {user?.role !== "viewer" ? (
+                            <select
+                              onClick={(e) => e.stopPropagation()}
+                              value={task.status}
+                              onChange={(e) =>
+                                updateStatusMutation.mutate({
+                                  taskId: task.id,
+                                  status: e.target.value,
+                                })
+                              }
+                              className="text-xs bg-slate-50 border border-slate-200 rounded px-1 py-1 text-slate-600 outline-none cursor-pointer hover:bg-slate-100"
+                            >
+                              <option value="todo">To Do</option>
+                              <option value="in_progress">In Progress</option>
+                              <option value="under_review">Under Review</option>
+                              <option value="done">Done</option>
+                            </select>
+                          ) : (
+                            <span className="text-xs font-medium text-slate-400 capitalize">
+                              {task.status.replace("_", " ")}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {columnTasks.length === 0 && (
+                  <div className="text-center p-4 text-sm text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
+                    No tasks found
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between border-t border-slate-200 pt-4 mt-2">
+        <span className="text-sm text-slate-500">
+          Showing{" "}
+          <span className="font-medium text-slate-900">
+            {totalCount === 0 ? 0 : (page - 1) * limit + 1}
+          </span>{" "}
+          to{" "}
+          <span className="font-medium text-slate-900">
+            {Math.min(page * limit, totalCount)}
+          </span>{" "}
+          of <span className="font-medium text-slate-900">{totalCount}</span>{" "}
+          tasks
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={page === 1}
+            onClick={() => setPage((p) => p - 1)}
+            className="p-2 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 text-slate-600"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="text-sm font-medium text-slate-700 px-2">
+            Page {page} of {totalPages || 1}
+          </span>
+          <button
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => p + 1)}
+            className="p-2 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 text-slate-600"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Create Task Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">
+              Create New Task
+            </h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Task Title <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  value={formData.title}
+                  onChange={(e) =>
+                    setFormData({ ...formData, title: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                  placeholder="e.g. Implement login API"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                  rows={2}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Priority
+                </label>
+                <select
+                  value={formData.priority}
+                  onChange={(e) =>
+                    setFormData({ ...formData, priority: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 bg-white"
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Assignee
+                </label>
+                <select
+                  value={formData.assigneeId}
+                  onChange={(e) =>
+                    setFormData({ ...formData, assigneeId: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 bg-white"
+                >
+                  <option value="">Unassigned</option>
+                  {members?.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name} ({member.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Due Date
+                </label>
+                <input
+                  type="date"
+                  value={formData.dueDate}
+                  onChange={(e) =>
+                    setFormData({ ...formData, dueDate: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={createMutation.isPending}
+                  className="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {createMutation.isPending ? "Creating..." : "Create Task"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* AI Magic Modal */}
+      {isAIModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-2 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-600" /> AI Task Creator
+            </h2>
+            <p className="text-sm text-slate-500 mb-4">
+              Describe what needs to be done. AI will create the task, set the
+              priority, and assign it based on your prompt.
+            </p>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                aiMutation.mutate(aiPrompt);
+              }}
+            >
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Your prompt <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                required
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder='e.g. "Create a high priority login bug fix task and assign it to Richard"'
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 mb-4"
+                rows={3}
+              />
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAIModalOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={aiMutation.isPending || !aiPrompt.trim()}
+                  className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {aiMutation.isPending ? "Analyzing prompt..." : "Create Task"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Task Details Drawer */}
+      {selectedTask && (
+        <TaskDrawer
+          task={selectedTask}
+          projectId={projectId}
+          members={members}
+          onClose={() => setSelectedTask(null)}
+        />
+      )}
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\Projects.jsx ===
+import { useState } from "react";
+import { Link } from "react-router-dom"; // <-- Added this import
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+import { Plus, FolderKanban } from "lucide-react";
+
+export default function Projects() {
+  const queryClient = useQueryClient();
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [formData, setFormData] = useState({
+    name: "",
+    key: "",
+    description: "",
+  });
+
+  // 1. Fetch Projects
+  const { data: projects, isLoading } = useQuery({
+    queryKey: ["projects"],
+    queryFn: async () => {
+      const res = await api.get("/projects");
+      return res.data;
+    },
+  });
+
+  // 2. Create Project Mutation
+  const createMutation = useMutation({
+    mutationFn: (newProject) => api.post("/projects", newProject),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] }); // Refresh list
+      toast.success("Project created!");
+      setIsModalOpen(false);
+      setFormData({ name: "", key: "", description: "" });
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || "Failed to create project");
+    },
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    createMutation.mutate(formData);
+  };
+
+  if (isLoading)
+    return <div className="text-slate-500">Loading projects...</div>;
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold text-slate-900">Projects</h1>
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors"
+        >
+          <Plus className="w-4 h-4" /> New Project
+        </button>
+      </div>
+
+      {/* Projects Grid */}
+      {projects?.length === 0 ? (
+        <div className="text-center py-20 bg-white rounded-xl border border-slate-200 border-dashed">
+          <FolderKanban className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-slate-900">
+            No projects yet
+          </h3>
+          <p className="text-slate-500 mb-4">
+            Create your first project to get started.
+          </p>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="text-brand-600 font-medium hover:underline"
+          >
+            + Create Project
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {projects?.map((project) => (
+            // Wrapped in a Link to navigate to the Kanban Board
+            <Link to={`/projects/${project.id}`} key={project.id}>
+              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-brand-500 transition-all cursor-pointer h-full">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-lg bg-brand-50 text-brand-600 flex items-center justify-center font-bold">
+                    {project.key}
+                  </div>
+                  <h3 className="font-semibold text-slate-900">
+                    {project.name}
+                  </h3>
+                </div>
+                <p className="text-sm text-slate-500 line-clamp-2">
+                  {project.description || "No description provided."}
+                </p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {/* Create Project Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">
+              Create New Project
+            </h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Project Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  value={formData.name}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                  placeholder="E-commerce App"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Key (e.g. ECOM) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="text"
+                  maxLength={8}
+                  value={formData.key}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      key: e.target.value.toUpperCase(),
+                    })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 uppercase"
+                  placeholder="ECOM"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                  rows={3}
+                />
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={createMutation.isPending}
+                  className="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {createMutation.isPending ? "Creating..." : "Create Project"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\Register.jsx ===
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { Link, useNavigate } from "react-router-dom";
+import { useDispatch } from "react-redux";
+import { setCredentials } from "../store/authSlice";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+
+const registerSchema = z.object({
+  orgName: z.string().min(2, "Organization name must be at least 2 characters"),
+  slug: z
+    .string()
+    .min(2, "Slug must be at least 2 characters")
+    .regex(
+      /^[a-z0-9-]+$/,
+      "Only lowercase letters, numbers, and hyphens allowed",
+    ),
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+});
+
+export default function Register() {
+  const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(registerSchema),
+  });
+
+  const onSubmit = async (data) => {
+    setIsLoading(true);
+    try {
+      const response = await api.post("/auth/register", data);
+
+      dispatch(
+        setCredentials({
+          user: response.data.user,
+          token: response.data.token,
+        }),
+      );
+
+      toast.success("Organization created successfully");
+      navigate("/dashboard");
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Registration failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-sm border border-slate-200">
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold text-slate-900">
+            Create an account
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Start managing your projects today
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Organization Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("orgName")}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="ABC Technologies"
+            />
+            {errors.orgName && (
+              <p className="text-red-500 text-xs mt-1">
+                {errors.orgName.message}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Workspace Slug <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("slug")}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="abc-tech"
+            />
+            {errors.slug && (
+              <p className="text-red-500 text-xs mt-1">{errors.slug.message}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Your Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("name")}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="John Doe"
+            />
+            {errors.name && (
+              <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Email <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("email")}
+              type="email"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="you@company.com"
+            />
+            {errors.email && (
+              <p className="text-red-500 text-xs mt-1">
+                {errors.email.message}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Password <span className="text-red-500">*</span>
+            </label>
+            <input
+              {...register("password")}
+              type="password"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+            />
+            {errors.password && (
+              <p className="text-red-500 text-xs mt-1">
+                {errors.password.message}
+              </p>
+            )}
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full bg-brand-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-brand-700 focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-70 transition-colors"
+          >
+            {isLoading ? "Creating Organization..." : "Create Organization"}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-slate-500 mt-6">
+          Already have an account?{" "}
+          <Link
+            to="/login"
+            className="text-brand-600 font-medium hover:underline"
+          >
+            Sign in
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\pages\Team.jsx ===
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+import { UserPlus } from "lucide-react";
+import { useSelector } from "react-redux";
+
+export default function Team() {
+  const queryClient = useQueryClient();
+  const { user } = useSelector((state) => state.auth); // To know who is currently logged in
+
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [inviteData, setInviteData] = useState({ email: "", role: "member" });
+
+  // Fetch Team Members
+  const { data: members, isLoading } = useQuery({
+    queryKey: ["team"],
+    queryFn: async () => {
+      const res = await api.get("/team");
+      return res.data;
+    },
+  });
+
+  // Invite Mutation
+  const inviteMutation = useMutation({
+    mutationFn: (data) => api.post("/invites", data),
+    onSuccess: () => {
+      toast.success("Invitation email sent successfully!");
+      setIsModalOpen(false);
+      setInviteData({ email: "", role: "member" });
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.error || "Failed to send invite");
+    },
+  });
+
+  // Update Role Mutation
+  const updateRoleMutation = useMutation({
+    mutationFn: ({ userId, role }) =>
+      api.patch(`/team/${userId}/role`, { role }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["team"] });
+      toast.success("Role updated successfully!");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to update role"),
+  });
+
+  // Remove User Mutation
+  const removeUserMutation = useMutation({
+    mutationFn: (userId) => api.delete(`/team/${userId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["team"] });
+      toast.success("User removed from team.");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to remove user"),
+  });
+
+  const handleInvite = (e) => {
+    e.preventDefault();
+    inviteMutation.mutate(inviteData);
+  };
+
+  if (isLoading)
+    return <div className="p-8 text-slate-500">Loading team...</div>;
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Team Members</h1>
+          <p className="text-slate-500 mt-1">
+            Manage who has access to your workspace.
+          </p>
+        </div>
+        <button
+          onClick={() => setIsModalOpen(true)}
+          className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors"
+        >
+          <UserPlus className="w-4 h-4" /> Invite Member
+        </button>
+      </div>
+
+      {/* Team Table */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
+              <th className="p-4 font-medium">Name</th>
+              <th className="p-4 font-medium">Email</th>
+              <th className="p-4 font-medium">Role</th>
+              <th className="p-4 font-medium text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {members?.map((member) => (
+              <tr
+                key={member.id}
+                className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
+              >
+                <td className="p-4 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-sm">
+                    {member.name.charAt(0)}
+                  </div>
+                  <span className="font-medium text-slate-900">
+                    {member.name}
+                  </span>
+                </td>
+                <td className="p-4 text-slate-600">{member.email}</td>
+                <td className="p-4">
+                  {/* Role Dropdown */}
+                  <select
+                    value={member.role}
+                    onChange={(e) =>
+                      updateRoleMutation.mutate({
+                        userId: member.id,
+                        role: e.target.value,
+                      })
+                    }
+                    // Disable dropdown if the user is the Owner OR if it's the logged-in user's own row (to prevent self-demotion)
+                    disabled={member.role === "owner" || member.id === user.id}
+                    className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-800 capitalize border border-transparent hover:border-slate-300 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="owner">Owner</option>
+                    <option value="admin">Admin</option>
+                    <option value="member">Member</option>
+                  </select>
+                </td>
+                <td className="p-4 text-right">
+                  {/* Only show remove button if they are not the owner and not yourself */}
+                  {member.role !== "owner" && member.id !== user.id && (
+                    <button
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Are you sure you want to remove ${member.name}?`,
+                          )
+                        ) {
+                          removeUserMutation.mutate(member.id);
+                        }
+                      }}
+                      className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Invite Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">
+              Invite Team Member
+            </h2>
+
+            <form onSubmit={handleInvite} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Email Address <span className="text-red-500">*</span>
+                </label>
+                <input
+                  required
+                  type="email"
+                  value={inviteData.email}
+                  onChange={(e) =>
+                    setInviteData({ ...inviteData, email: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                  placeholder="employee@company.com"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Role <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={inviteData.role}
+                  onChange={(e) =>
+                    setInviteData({ ...inviteData, role: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 bg-white"
+                >
+                  <option value="member">Member (Can work on tasks)</option>
+                  <option value="admin">
+                    Admin (Can manage team & projects)
+                  </option>
+                </select>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={inviteMutation.isPending}
+                  className="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {inviteMutation.isPending ? "Sending..." : "Send Invite"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\store\authSlice.js ===
+import { createSlice } from '@reduxjs/toolkit';
+
+// Check if user is already logged in (from previous session)
+const savedAuth = JSON.parse(localStorage.getItem('auth') || 'null');
+
+const initialState = {
+    user: savedAuth ? savedAuth.user : null,
+    token: savedAuth ? savedAuth.token : null,
+    isAuthenticated: savedAuth ? true : false,
+};
+
+const authSlice = createSlice({
+    name: 'auth',
+    initialState,
+    reducers: {
+        // Call this after successful login/register
+        setCredentials: (state, action) => {
+            const { user, token } = action.payload;
+            state.user = user;
+            state.token = token;
+            state.isAuthenticated = true;
+
+            // Save to localStorage so user stays logged in on refresh
+            localStorage.setItem('auth', JSON.stringify({ user, token }));
+        },
+
+        // Call this to log out
+        logout: (state) => {
+            state.user = null;
+            state.token = null;
+            state.isAuthenticated = false;
+            localStorage.removeItem('auth');
+        },
+    },
+});
+
+export const { setCredentials, logout } = authSlice.actions;
+export default authSlice.reducer;
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\store\index.js ===
+import { configureStore } from '@reduxjs/toolkit';
+import authReducer from './authSlice';
+
+export const store = configureStore({
+    reducer: {
+        auth: authReducer,
+        // We will add more slices here later (e.g., workspace, ui)
+    },
+});
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\App.css ===
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\App.jsx ===
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import Dashboard from "./pages/Dashboard";
+import Projects from "./pages/Projects";
+import Layout from "./components/Layout";
+import ProtectedRoute from "./components/ProtectedRoute";
+import ProjectBoard from "./pages/ProjectBoard";
+import Team from "./pages/Team";
+import AcceptInvite from "./pages/AcceptInvite";
+import MyTasks from "./pages/MyTasks";
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Toaster position="top-right" richColors />
+      <Routes>
+        {/* Public Routes */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/accept-invite" element={<AcceptInvite />} />
+
+        {/* Wrap protected routes in the Layout */}
+        <Route element={<ProtectedRoute />}>
+          <Route element={<Layout />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/:projectId" element={<ProjectBoard />} />
+            <Route path="/team" element={<Team />} />
+            <Route path="/tasks" element={<MyTasks />} />
+          </Route>
+        </Route>
+
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\index.css ===
+@import "tailwindcss";
+
+@theme {
+  /* Brand palette â€” full scale so every shade works */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+  --color-brand-900: #312e81;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-slate-50 text-slate-800 font-sans;
+  }
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-in {
+  animation: slideIn 0.2s ease-out forwards;
+}
+
+/* Add this to the bottom of your index.css */
+
+/* Soft background gradient for the whole page */
+.bg-dashboard-gradient {
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 50%, #f5f3ff 100%);
+}
+
+/* Gradient curves for the stat cards */
+.card-gradient-blue {
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+}
+.card-gradient-green {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+}
+.card-gradient-orange {
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+}
+
+/* Soft shadow for cards */
+.soft-shadow {
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+}
+=== D:\Guvi\multi_tenant_project_management-app\multi-tenant-project\frontend\src\main.jsx ===
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { Provider } from "react-redux";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { store } from "./store";
+import "./index.css";
+import App from "./App.jsx";
+import { WebSocketProvider } from "./context/WebSocketContext.jsx";
+
+const queryClient = new QueryClient();
+
+createRoot(document.getElementById("root")).render(
+  <StrictMode>
+    <Provider store={store}>
+      <QueryClientProvider client={queryClient}>
+        <WebSocketProvider>
+          <App />
+        </WebSocketProvider>
+      </QueryClientProvider>
+    </Provider>
+  </StrictMode>,
+);

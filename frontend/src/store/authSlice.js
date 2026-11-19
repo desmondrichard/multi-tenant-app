@@ -1,6 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit';
 
-// Check if user is already logged in (from previous session)
 const savedAuth = JSON.parse(localStorage.getItem('auth') || 'null');
 
 const initialState = {
@@ -13,18 +12,18 @@ const authSlice = createSlice({
     name: 'auth',
     initialState,
     reducers: {
-        // Call this after successful login/register
         setCredentials: (state, action) => {
             const { user, token } = action.payload;
             state.user = user;
             state.token = token;
             state.isAuthenticated = true;
-
-            // Save to localStorage so user stays logged in on refresh
             localStorage.setItem('auth', JSON.stringify({ user, token }));
         },
-
-        // Call this to log out
+        updateToken: (state, action) => {
+            // Used when switching workspaces
+            state.token = action.payload.token;
+            localStorage.setItem('auth', JSON.stringify({ user: state.user, token: action.payload.token }));
+        },
         logout: (state) => {
             state.user = null;
             state.token = null;
@@ -34,5 +33,5 @@ const authSlice = createSlice({
     },
 });
 
-export const { setCredentials, logout } = authSlice.actions;
+export const { setCredentials, updateToken, logout } = authSlice.actions;
 export default authSlice.reducer;
