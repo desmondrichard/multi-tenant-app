@@ -71,7 +71,7 @@ export default function Register() {
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Organization Name
+              Organization Name <span className="text-red-500">*</span>
             </label>
             <input
               {...register("orgName")}
@@ -87,7 +87,7 @@ export default function Register() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Workspace Slug
+              Workspace Slug <span className="text-red-500">*</span>
             </label>
             <input
               {...register("slug")}
@@ -101,7 +101,7 @@ export default function Register() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Your Name
+              Your Name <span className="text-red-500">*</span>
             </label>
             <input
               {...register("name")}
@@ -115,7 +115,7 @@ export default function Register() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Email
+              Email <span className="text-red-500">*</span>
             </label>
             <input
               {...register("email")}
@@ -132,7 +132,7 @@ export default function Register() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Password
+              Password <span className="text-red-500">*</span>
             </label>
             <input
               {...register("password")}

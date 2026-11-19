@@ -62,7 +62,7 @@ export default function Login() {
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Email
+              Email <span className="text-red-500">*</span>
             </label>
             <input
               {...register("email")}
@@ -79,7 +79,7 @@ export default function Login() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Password
+              Password <span className="text-red-500">*</span>
             </label>
             <input
               {...register("password")}

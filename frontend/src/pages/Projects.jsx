@@ -107,7 +107,7 @@ export default function Projects() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Project Name
+                  Project Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   required
@@ -122,7 +122,7 @@ export default function Projects() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Key (e.g. ECOM)
+                  Key (e.g. ECOM) <span className="text-red-500">*</span>
                 </label>
                 <input
                   required

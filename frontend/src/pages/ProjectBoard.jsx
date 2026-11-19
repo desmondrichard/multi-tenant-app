@@ -432,7 +432,7 @@ export default function ProjectBoard() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Task Title
+                  Task Title <span className="text-red-500">*</span>
                 </label>
                 <input
                   required
@@ -545,6 +545,9 @@ export default function ProjectBoard() {
                 aiMutation.mutate(aiPrompt);
               }}
             >
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Your prompt <span className="text-red-500">*</span>
+              </label>
               <textarea
                 required
                 value={aiPrompt}

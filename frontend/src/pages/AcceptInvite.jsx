@@ -45,7 +45,7 @@ export default function AcceptInvite() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Your Name
+              Your Name <span className="text-red-500">*</span>
             </label>
             <input
               required
@@ -60,7 +60,7 @@ export default function AcceptInvite() {
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
-              Password
+              Password <span className="text-red-500">*</span>
             </label>
             <input
               required

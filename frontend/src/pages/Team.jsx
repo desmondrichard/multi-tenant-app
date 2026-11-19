@@ -163,7 +163,7 @@ export default function Team() {
             <form onSubmit={handleInvite} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Email Address
+                  Email Address <span className="text-red-500">*</span>
                 </label>
                 <input
                   required
@@ -178,7 +178,7 @@ export default function Team() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Role
+                  Role <span className="text-red-500">*</span>
                 </label>
                 <select
                   value={inviteData.role}
