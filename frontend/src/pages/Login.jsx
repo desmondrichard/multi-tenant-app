@@ -104,12 +104,12 @@ export default function Login() {
         </form>
 
         <p className="text-center text-sm text-slate-500 mt-6">
-          Don't have an account?{" "}
+          Want to create a new organization?{" "}
           <Link
             to="/register"
             className="text-brand-600 font-medium hover:underline"
           >
-            Register
+            Create
           </Link>
         </p>
       </div>
