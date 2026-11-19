@@ -7,7 +7,18 @@ import { useSelector } from "react-redux";
 
 export default function Team() {
   const queryClient = useQueryClient();
-  const { user } = useSelector((state) => state.auth);
+  const { user, token } = useSelector((state) => state.auth);
+
+  // Decode JWT to get the current user's role in this workspace
+  let currentRole = "member";
+  if (token) {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      currentRole = payload.role;
+    } catch (e) {
+      console.error("Failed to decode token", e);
+    }
+  }
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [inviteData, setInviteData] = useState({ email: "", role: "member" });
@@ -71,12 +82,16 @@ export default function Team() {
             Manage who has access to your workspace.
           </p>
         </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors"
-        >
-          <UserPlus className="w-4 h-4" /> Invite Member
-        </button>
+
+        {/* Only show Invite button if currentRole is owner or admin */}
+        {(currentRole === "owner" || currentRole === "admin") && (
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors"
+          >
+            <UserPlus className="w-4 h-4" /> Invite Member
+          </button>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -105,9 +120,8 @@ export default function Team() {
                 </td>
                 <td className="p-4 text-slate-600">{member.email}</td>
                 <td className="p-4">
-                  {/* Role Dropdown - Dynamically reads from DB via member.role */}
                   <select
-                    value={member.role}
+                    value={member.role || "member"}
                     onChange={(e) =>
                       updateRoleMutation.mutate({
                         userId: member.id,
@@ -152,8 +166,67 @@ export default function Team() {
         </table>
       </div>
 
-      {/* Invite Modal (Same as before) */}
-      {/* ... */}
+      {/* Invite Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">
+              Invite Team Member
+            </h2>
+
+            <form onSubmit={handleInvite} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Email Address
+                </label>
+                <input
+                  required
+                  type="email"
+                  value={inviteData.email}
+                  onChange={(e) =>
+                    setInviteData({ ...inviteData, email: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                  placeholder="employee@company.com"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Role
+                </label>
+                <select
+                  value={inviteData.role}
+                  onChange={(e) =>
+                    setInviteData({ ...inviteData, role: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 bg-white"
+                >
+                  <option value="member">Member (Can work on tasks)</option>
+                  <option value="admin">
+                    Admin (Can manage team & projects)
+                  </option>
+                </select>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={inviteMutation.isPending}
+                  className="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {inviteMutation.isPending ? "Sending..." : "Send Invite"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
