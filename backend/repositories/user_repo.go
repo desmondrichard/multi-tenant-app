@@ -103,3 +103,11 @@ func (r *UserRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]m
 	}
 	return users, nil
 }
+
+// Add this at the bottom of user_repo.go
+func (r *UserRepo) UpdateUser(ctx context.Context, user *models.User) error {
+	filter := bson.M{"_id": user.ID}
+	update := bson.M{"$set": bson.M{"memberships": user.Memberships}}
+	_, err := r.coll().UpdateOne(ctx, filter, update)
+	return err
+}

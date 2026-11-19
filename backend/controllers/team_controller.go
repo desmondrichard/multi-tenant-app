@@ -142,13 +142,33 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	hash, _ := utils.HashPassword(in.Password)
-
 	// Fetch Org Name
 	var org models.Organization
 	config.Database.Collection("organizations").FindOne(c.Request.Context(), bson.M{"_id": inv.OrganizationID}).Decode(&org)
 
-	// Create User with Membership
+	// Check if user already exists
+	existingUser, _ := t.UserRepo.FindByEmail(c.Request.Context(), inv.Email)
+
+	if existingUser != nil {
+		// User exists! Just add a new membership
+		newMembership := models.Membership{
+			OrganizationID:   inv.OrganizationID,
+			OrganizationName: org.Name,
+			Role:             inv.Role,
+		}
+
+		// Add to their list
+		existingUser.Memberships = append(existingUser.Memberships, newMembership)
+		t.UserRepo.UpdateUser(c.Request.Context(), existingUser)
+		t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
+
+		token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
+		c.JSON(http.StatusOK, gin.H{"token": token, "user": existingUser})
+		return
+	}
+
+	// User does not exist. Create new user.
+	hash, _ := utils.HashPassword(in.Password)
 	user := &models.User{
 		Name:         in.Name,
 		Email:        inv.Email,
@@ -168,8 +188,6 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 	}
 
 	t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
-
-	// Generate token using the new membership
 	token, _ := utils.GenerateToken(user.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
@@ -192,7 +210,6 @@ func (t *TeamController) UpdateRole(c *gin.Context) {
 		return
 	}
 
-	// We need a new method in UserRepo to update the role inside the memberships array
 	if err := t.UserRepo.UpdateRoleInMemberships(c.Request.Context(), orgID, userID, in.Role); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -209,13 +226,13 @@ func (t *TeamController) RemoveUser(c *gin.Context) {
 		return
 	}
 
+	// Prevent owners from deleting themselves
 	currentUserID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
 	if userID == currentUserID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot remove yourself"})
 		return
 	}
 
-	// We need to remove the membership, not the whole user if they are in multiple workspaces
 	if err := t.UserRepo.RemoveMembership(c.Request.Context(), orgID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
