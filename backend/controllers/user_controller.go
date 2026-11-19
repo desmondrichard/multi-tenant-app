@@ -25,12 +25,12 @@ func (u *UserController) ListMembers(c *gin.Context) {
 		return
 	}
 
-	// We need to map the users to include the specific role for THIS organization
+	// Map users to extract the specific role for THIS organization
 	type UserResponse struct {
 		ID    primitive.ObjectID `json:"id"`
 		Name  string             `json:"name"`
 		Email string             `json:"email"`
-		Role  string             `json:"role"` // Extract the role from the membership
+		Role  string             `json:"role"`
 	}
 
 	var result []UserResponse

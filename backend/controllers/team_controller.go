@@ -125,6 +125,7 @@ func (t *TeamController) Invite(c *gin.Context) {
 }
 
 // Accept Invite (Public route)
+// Accept Invite (Public route)
 func (t *TeamController) AcceptInvite(c *gin.Context) {
 	var in struct {
 		Token    string `json:"token" validate:"required"`
@@ -150,14 +151,29 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 	existingUser, _ := t.UserRepo.FindByEmail(c.Request.Context(), inv.Email)
 
 	if existingUser != nil {
-		// User exists! Just add a new membership
+		// User exists! We need to check if they are ALREADY in this workspace
+		isAlreadyMember := false
+		for _, m := range existingUser.Memberships {
+			if m.OrganizationID == inv.OrganizationID {
+				isAlreadyMember = true
+				break
+			}
+		}
+
+		if isAlreadyMember {
+			// They are already in this workspace, just log them in
+			token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
+			c.JSON(http.StatusOK, gin.H{"token": token, "user": existingUser})
+			return
+		}
+
+		// Add the new membership with the role from the INVITATION
 		newMembership := models.Membership{
 			OrganizationID:   inv.OrganizationID,
 			OrganizationName: org.Name,
-			Role:             inv.Role, // <-- Ensure this is inv.Role
+			Role:             inv.Role, // <-- THIS is the fix. It uses "member", not "owner"
 		}
 
-		// Add to their list
 		existingUser.Memberships = append(existingUser.Memberships, newMembership)
 		t.UserRepo.UpdateUser(c.Request.Context(), existingUser)
 		t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
@@ -167,7 +183,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	// User does not exist. Create new user.
+	// User does not exist. Create new user with the INVITATION's role.
 	hash, _ := utils.HashPassword(in.Password)
 	user := &models.User{
 		Name:         in.Name,
@@ -177,7 +193,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 			{
 				OrganizationID:   inv.OrganizationID,
 				OrganizationName: org.Name,
-				Role:             inv.Role, // <-- Ensure this is inv.Role, not RoleOwner
+				Role:             inv.Role, // <-- Uses "member"
 			},
 		},
 	}
