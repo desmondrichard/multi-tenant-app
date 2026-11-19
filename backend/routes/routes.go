@@ -91,10 +91,10 @@ func Setup(r *gin.Engine) {
 			// Auth Check
 			protected.GET("/me", func(c *gin.Context) {
 				c.JSON(200, gin.H{
-					"userId": c.GetString("userId"),
-					"orgId":  c.GetString("orgId"),
+					"userId":  c.GetString("userId"),
+					"orgId":   c.GetString("orgId"),
 					"orgName": c.GetString("orgName"),
-					"role":   c.GetString("role"),
+					"role":    c.GetString("role"),
 				})
 			})
 
@@ -124,6 +124,11 @@ func Setup(r *gin.Engine) {
 			{
 				subtasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.AddSubtask)
 				subtasks.PATCH("/:subtaskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.ToggleSubtask)
+				subtasks.PATCH("/:subtaskId/details", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.UpdateSubtask)
+
+				// Subtask comments
+				subtasks.GET("/:subtaskId/comments", commentCtrl.ListByTask)
+				subtasks.POST("/:subtaskId/comments", middleware.RequireRole("owner", "admin", "manager", "member"), commentCtrl.Create)
 			}
 
 			// My Tasks

@@ -164,3 +164,38 @@ func (r *TaskRepo) ToggleSubtask(ctx context.Context, orgID, taskID primitive.Ob
 	_, err := r.coll().UpdateOne(ctx, filter, update)
 	return err
 }
+
+// UpdateSubtaskDetails updates the title and description of one subtask
+func (r *TaskRepo) UpdateSubtaskDetails(ctx context.Context, orgID, taskID primitive.ObjectID, subtaskID, title, description string) error {
+	filter := bson.M{
+		"_id":            taskID,
+		"organizationId": orgID,
+		"subtasks.id":    subtaskID,
+	}
+	update := bson.M{"$set": bson.M{
+		"subtasks.$.title":       title,
+		"subtasks.$.description": description,
+	}}
+	res, err := r.coll().UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
+}
+
+// HasSubtask checks that a subtask belongs to the task and returns it
+func (r *TaskRepo) HasSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtaskID string) (*models.Subtask, error) {
+	task, err := r.FindByID(ctx, orgID, taskID)
+	if err != nil || task == nil {
+		return nil, err
+	}
+	for i := range task.Subtasks {
+		if task.Subtasks[i].ID == subtaskID {
+			return &task.Subtasks[i], nil
+		}
+	}
+	return nil, nil
+}

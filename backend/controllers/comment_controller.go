@@ -1,8 +1,9 @@
 package controllers
 
 import (
-	"fmt" // <-- Added this
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
@@ -35,10 +36,27 @@ func (c *CommentController) Create(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if strings.TrimSpace(in.Content) == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Comment cannot be empty"})
+		return
+	}
+
+	// Present only on /tasks/:taskId/subtasks/:subtaskId/comments
+	subtaskID := ctx.Param("subtaskId")
+	var subtaskTitle string
+	if subtaskID != "" {
+		st, err := c.TaskRepo.HasSubtask(ctx.Request.Context(), orgID, taskID, subtaskID)
+		if err != nil || st == nil {
+			ctx.JSON(http.StatusNotFound, gin.H{"error": "Subtask not found"})
+			return
+		}
+		subtaskTitle = st.Title
+	}
 
 	comment := &models.Comment{
 		OrganizationID: orgID,
 		TaskID:         taskID,
+		SubtaskID:      subtaskID,
 		UserID:         userID,
 		Content:        in.Content,
 	}
@@ -54,7 +72,7 @@ func (c *CommentController) Create(ctx *gin.Context) {
 		TaskID:         taskID,
 		UserID:         userID,
 		Action:         models.ActionAddedComment,
-		Details:        "Added a comment",
+		Details:        activityDetails(subtaskID, subtaskTitle),
 	})
 
 	// 2. Send Notification to Assignee
@@ -64,13 +82,12 @@ func (c *CommentController) Create(ctx *gin.Context) {
 			OrganizationID: orgID,
 			UserID:         task.AssigneeID,
 			Title:          "New Comment",
-			Message:        "Someone commented on your task: " + task.Title,
+			Message:        notificationMessage(subtaskID, subtaskTitle, task.Title),
 		})
 	}
 
-	// 3. Broadcast to WebSocket clients in the same Org
 	// 3. Broadcast to WebSocket clients in the same Org (Run in background)
-	broadcastMsg := fmt.Sprintf(`{"type":"NEW_COMMENT","orgId":"%s","taskId":"%s"}`, orgID.Hex(), taskID.Hex())
+	broadcastMsg := fmt.Sprintf(`{"type":"NEW_COMMENT","orgId":"%s","taskId":"%s","subtaskId":"%s"}`, orgID.Hex(), taskID.Hex(), subtaskID)
 	go func() {
 		ws.GlobalHub.Broadcast <- []byte(broadcastMsg)
 	}()
@@ -88,7 +105,8 @@ func (c *CommentController) ListByTask(ctx *gin.Context) {
 		return
 	}
 
-	comments, err := c.Repo.ListByTask(ctx.Request.Context(), orgID, taskID)
+	// subtaskId is empty on the task route, set on the subtask route
+	comments, err := c.Repo.ListByTask(ctx.Request.Context(), orgID, taskID, ctx.Param("subtaskId"))
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -98,4 +116,18 @@ func (c *CommentController) ListByTask(ctx *gin.Context) {
 		comments = []models.Comment{}
 	}
 	ctx.JSON(http.StatusOK, comments)
+}
+
+func activityDetails(subtaskID, subtaskTitle string) string {
+	if subtaskID == "" {
+		return "Added a comment"
+	}
+	return "Commented on subtask: " + subtaskTitle
+}
+
+func notificationMessage(subtaskID, subtaskTitle, taskTitle string) string {
+	if subtaskID == "" {
+		return "Someone commented on your task: " + taskTitle
+	}
+	return "Someone commented on subtask \"" + subtaskTitle + "\" in your task: " + taskTitle
 }

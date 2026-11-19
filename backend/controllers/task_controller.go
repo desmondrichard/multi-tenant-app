@@ -3,6 +3,7 @@ package controllers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -196,7 +197,8 @@ func (t *TaskController) AddSubtask(c *gin.Context) {
 	taskID, _ := primitive.ObjectIDFromHex(c.Param("taskId"))
 
 	var in struct {
-		Title string `json:"title" validate:"required,min=1"`
+		Title       string `json:"title" validate:"required,min=1"`
+		Description string `json:"description"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -205,9 +207,10 @@ func (t *TaskController) AddSubtask(c *gin.Context) {
 
 	// Create subtask with a string ID (fixes the 500 error)
 	subtask := models.Subtask{
-		ID:        primitive.NewObjectID().Hex(),
-		Title:     in.Title,
-		Completed: false,
+		ID:          primitive.NewObjectID().Hex(),
+		Title:       in.Title,
+		Description: in.Description,
+		Completed:   false,
 	}
 
 	if err := t.Repo.AddSubtask(c.Request.Context(), orgID, taskID, subtask); err != nil {
@@ -237,4 +240,36 @@ func (t *TaskController) ToggleSubtask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// UpdateSubtask edits the title and description of a subtask
+func (t *TaskController) UpdateSubtask(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+	subtaskID := c.Param("subtaskId")
+
+	var in struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	in.Title = strings.TrimSpace(in.Title)
+	if in.Title == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Title cannot be empty"})
+		return
+	}
+
+	if err := t.Repo.UpdateSubtaskDetails(c.Request.Context(), orgID, taskID, subtaskID, in.Title, in.Description); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": subtaskID, "title": in.Title, "description": in.Description})
 }

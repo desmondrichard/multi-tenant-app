@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { toast } from "sonner";
 import { X, Send, User, Clock } from "lucide-react";
 import { useSelector } from "react-redux";
+import SubtaskItem from "./SubtaskItem";
 
 export default function TaskDrawer({ task, projectId, members, onClose }) {
   const queryClient = useQueryClient();
@@ -55,6 +56,7 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
       const newSubtaskObj = {
         id: `temp-${Date.now()}`,
         title: newTitle,
+        description: "",
         completed: false,
       };
       setLocalSubtasks((prev) => [...prev, newSubtaskObj]);
@@ -173,27 +175,20 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
 
             <div className="space-y-2 mb-3">
               {localSubtasks.map((subtask) => (
-                <label
+                <SubtaskItem
                   key={subtask.id}
-                  className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors"
-                >
-                  <input
-                    type="checkbox"
-                    checked={subtask.completed}
-                    onChange={(e) =>
-                      toggleSubtaskMutation.mutate({
-                        subtaskId: subtask.id,
-                        completed: e.target.checked,
-                      })
-                    }
-                    className="w-4 h-4 text-brand-600 rounded border-slate-300 focus:ring-brand-500"
-                  />
-                  <span
-                    className={`text-sm ${subtask.completed ? "line-through text-slate-400" : "text-slate-700"}`}
-                  >
-                    {subtask.title}
-                  </span>
-                </label>
+                  taskId={task.id}
+                  subtask={subtask}
+                  members={members}
+                  onToggle={(subtaskId, completed) =>
+                    toggleSubtaskMutation.mutate({ subtaskId, completed })
+                  }
+                  onUpdated={(updated) =>
+                    setLocalSubtasks((prev) =>
+                      prev.map((s) => (s.id === updated.id ? updated : s)),
+                    )
+                  }
+                />
               ))}
             </div>
 

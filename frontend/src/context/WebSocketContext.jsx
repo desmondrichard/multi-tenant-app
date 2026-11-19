@@ -32,7 +32,15 @@ export function WebSocketProvider({ children }) {
       if (data.type === "NEW_COMMENT") {
         console.log("📩 Real-time update received!");
         // Instantly refetch comments and activities
-        queryClient.invalidateQueries({ queryKey: ["comments", data.taskId] });
+        if (data.subtaskId) {
+          queryClient.invalidateQueries({
+            queryKey: ["subtask-comments", data.taskId, data.subtaskId],
+          });
+        } else {
+          queryClient.invalidateQueries({
+            queryKey: ["comments", data.taskId],
+          });
+        }
         queryClient.invalidateQueries({
           queryKey: ["activities", data.taskId],
         });

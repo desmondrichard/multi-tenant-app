@@ -20,9 +20,10 @@ const (
 )
 
 type Subtask struct {
-	ID        string `bson:"id" json:"id"` // Standard string ID for arrays
-	Title     string `bson:"title" json:"title"`
-	Completed bool   `bson:"completed" json:"completed"`
+	ID          string `bson:"id" json:"id"` // Standard string ID for arrays
+	Title       string `bson:"title" json:"title"`
+	Description string `bson:"description" json:"description"`
+	Completed   bool   `bson:"completed" json:"completed"`
 }
 
 type Task struct {

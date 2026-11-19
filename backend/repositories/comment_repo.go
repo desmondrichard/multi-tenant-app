@@ -28,13 +28,21 @@ func (r *CommentRepo) Create(ctx context.Context, c *models.Comment) error {
 	return nil
 }
 
-func (r *CommentRepo) ListByTask(ctx context.Context, orgID, taskID primitive.ObjectID) ([]models.Comment, error) {
+// ListByTask returns comments for a task. If subtaskID is empty, only
+// task-level comments are returned (subtask comments are excluded).
+// If subtaskID is set, only comments of that subtask are returned.
+func (r *CommentRepo) ListByTask(ctx context.Context, orgID, taskID primitive.ObjectID, subtaskID string) ([]models.Comment, error) {
 	filter := bson.M{
 		"organizationId": orgID,
 		"taskId":         taskID,
 	}
+	if subtaskID == "" {
+		filter["subtaskId"] = bson.M{"$in": bson.A{nil, ""}} // nil matches missing field
+	} else {
+		filter["subtaskId"] = subtaskID
+	}
 	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}}) // Oldest first
-	
+
 	cursor, err := r.coll().Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
