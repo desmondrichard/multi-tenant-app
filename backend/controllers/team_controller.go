@@ -154,7 +154,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 		newMembership := models.Membership{
 			OrganizationID:   inv.OrganizationID,
 			OrganizationName: org.Name,
-			Role:             inv.Role,
+			Role:             inv.Role, // <-- Ensure this is inv.Role
 		}
 
 		// Add to their list
@@ -177,7 +177,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 			{
 				OrganizationID:   inv.OrganizationID,
 				OrganizationName: org.Name,
-				Role:             inv.Role,
+				Role:             inv.Role, // <-- Ensure this is inv.Role, not RoleOwner
 			},
 		},
 	}

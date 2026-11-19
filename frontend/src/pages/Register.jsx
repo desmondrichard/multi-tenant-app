@@ -50,6 +50,7 @@ export default function Register() {
       toast.success("Organization created successfully");
       navigate("/dashboard");
     } catch (error) {
+      // This will now correctly show "workspace slug is already taken"
       toast.error(error.response?.data?.error || "Registration failed");
     } finally {
       setIsLoading(false);

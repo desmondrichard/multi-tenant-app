@@ -11,6 +11,7 @@ import (
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type AuthService struct {
@@ -47,6 +48,10 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 	}
 	res, err := config.Database.Collection("organizations").InsertOne(ctx, org)
 	if err != nil {
+		// Handle duplicate slug error
+		if mongo.IsDuplicateKeyError(err) {
+			return "", nil, errors.New("workspace slug is already taken")
+		}
 		return "", nil, err
 	}
 	org.ID = res.InsertedID.(primitive.ObjectID)

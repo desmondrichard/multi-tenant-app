@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -34,4 +35,15 @@ func ConnectMongo() {
 	Client = client
 	Database = client.Database(dbName)
 	log.Println("✅ MongoDB connected:", dbName)
+
+	// Create unique index on organization slug
+	_, err = Database.Collection("organizations").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "slug", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Println("⚠️ Failed to create unique index on slug:", err)
+	} else {
+		log.Println("✅ Unique index on organization slug verified")
+	}
 }
