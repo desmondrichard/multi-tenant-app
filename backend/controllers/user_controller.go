@@ -25,7 +25,6 @@ func (u *UserController) ListMembers(c *gin.Context) {
 		return
 	}
 
-	// Map users to extract the specific role for THIS organization
 	type UserResponse struct {
 		ID    primitive.ObjectID `json:"id"`
 		Name  string             `json:"name"`
@@ -36,11 +35,18 @@ func (u *UserController) ListMembers(c *gin.Context) {
 	var result []UserResponse
 	for _, user := range users {
 		var roleForThisOrg string
+
+		// Look through ALL memberships to find the one for THIS org
 		for _, m := range user.Memberships {
 			if m.OrganizationID == orgID {
 				roleForThisOrg = m.Role
 				break
 			}
+		}
+
+		// If no role is found, default to "member" (safety net)
+		if roleForThisOrg == "" {
+			roleForThisOrg = "member"
 		}
 
 		result = append(result, UserResponse{
