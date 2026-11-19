@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -13,7 +12,6 @@ type UserController struct {
 	Repo *repositories.UserRepo
 }
 
-// ListMembers returns all users belonging to the logged-in user's organization
 func (u *UserController) ListMembers(c *gin.Context) {
 	orgID, err := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	if err != nil {
@@ -27,10 +25,35 @@ func (u *UserController) ListMembers(c *gin.Context) {
 		return
 	}
 
-	// Ensure we return an empty array instead of null if no users are found
-	if users == nil {
-		users = []models.User{}
+	// We need to map the users to include the specific role for THIS organization
+	type UserResponse struct {
+		ID    primitive.ObjectID `json:"id"`
+		Name  string             `json:"name"`
+		Email string             `json:"email"`
+		Role  string             `json:"role"` // Extract the role from the membership
 	}
 
-	c.JSON(http.StatusOK, users)
+	var result []UserResponse
+	for _, user := range users {
+		var roleForThisOrg string
+		for _, m := range user.Memberships {
+			if m.OrganizationID == orgID {
+				roleForThisOrg = m.Role
+				break
+			}
+		}
+
+		result = append(result, UserResponse{
+			ID:    user.ID,
+			Name:  user.Name,
+			Email: user.Email,
+			Role:  roleForThisOrg,
+		})
+	}
+
+	if result == nil {
+		result = []UserResponse{}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
