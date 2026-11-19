@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/config"
@@ -24,14 +25,37 @@ type TeamController struct {
 	InvRepo  *repositories.InvitationRepo
 }
 
+// TeamMemberDTO is a flattened view of a user for ONE workspace,
+// so the frontend gets the role for the current org directly.
+type TeamMemberDTO struct {
+	ID    primitive.ObjectID `json:"id"`
+	Name  string             `json:"name"`
+	Email string             `json:"email"`
+	Role  string             `json:"role"`
+}
+
 // List Team Members
 func (t *TeamController) ListMembers(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	users, _ := t.UserRepo.ListByOrg(c.Request.Context(), orgID)
-	if users == nil {
-		users = []models.User{}
+
+	members := []TeamMemberDTO{}
+	for _, u := range users {
+		role := models.RoleMember
+		for _, m := range u.Memberships {
+			if m.OrganizationID == orgID {
+				role = m.Role
+				break
+			}
+		}
+		members = append(members, TeamMemberDTO{
+			ID:    u.ID,
+			Name:  u.Name,
+			Email: u.Email,
+			Role:  role,
+		})
 	}
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, members)
 }
 
 // Invite generates a token and sends an email via Brevo HTTP API
@@ -43,6 +67,13 @@ func (t *TeamController) Invite(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	in.Role = strings.ToLower(strings.TrimSpace(in.Role))
+	if in.Role != models.RoleAdmin && in.Role != models.RoleMember {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Role must be admin or member"})
 		return
 	}
 
