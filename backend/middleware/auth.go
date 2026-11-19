@@ -15,17 +15,15 @@ func AuthRequired() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
 			return
 		}
-
 		claims, err := utils.ParseToken(strings.TrimPrefix(h, "Bearer "))
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
-
 		c.Set("userId", claims.UserID)
 		c.Set("orgId", claims.OrganizationID)
+		c.Set("orgName", claims.OrgName) // <-- Added
 		c.Set("role", claims.Role)
-
 		c.Next()
 	}
 }

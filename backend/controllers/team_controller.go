@@ -11,9 +11,11 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yourname/multi-tenant-pm/config" // <-- Added
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
+	"go.mongodb.org/mongo-driver/bson" // <-- Added
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -161,7 +163,12 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 
 	t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
 
-	token, _ := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), user.Role)
+	// --- FIX: Fetch org name to pass to GenerateToken ---
+	var org models.Organization
+	config.Database.Collection("organizations").FindOne(c.Request.Context(), bson.M{"_id": user.OrganizationID}).Decode(&org)
+
+	token, _ := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
+
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
 }
 

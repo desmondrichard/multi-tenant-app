@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -18,20 +19,19 @@ type AuthService struct {
 }
 
 type RegisterInput struct {
-	OrgName  string `json:"orgName"  validate:"required,min=2"`
+	OrgName  string `json:"orgName" validate:"required,min=2"`
 	Slug     string `json:"slug" validate:"required,min=2"`
-	Name     string `json:"name"     validate:"required"`
-	Email    string `json:"email"    validate:"required,email"`
+	Name     string `json:"name" validate:"required"`
+	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required,min=6"`
 }
 
 type LoginInput struct {
-	Email    string `json:"email"    validate:"required,email"`
+	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required"`
 }
 
 func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *models.User, error) {
-	// 1) Email uniqueness
 	existing, err := s.Users.FindByEmail(ctx, strings.ToLower(in.Email))
 	if err != nil {
 		return "", nil, err
@@ -40,7 +40,7 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 		return "", nil, errors.New("email already registered")
 	}
 
-	// 2) Create organization
+	// 1) Create org
 	org := models.Organization{
 		Name:      in.OrgName,
 		Slug:      strings.ToLower(in.Slug),
@@ -52,13 +52,13 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 	}
 	org.ID = res.InsertedID.(primitive.ObjectID)
 
-	// 3) Hash password
+	// 2) Hash pw
 	hash, err := utils.HashPassword(in.Password)
 	if err != nil {
 		return "", nil, err
 	}
 
-	// 4) Create user (owner)
+	// 3) Create owner user
 	user := &models.User{
 		OrganizationID: org.ID,
 		Name:           in.Name,
@@ -70,8 +70,8 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 		return "", nil, err
 	}
 
-	// 5) Issue token
-	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), user.Role)
+	// 4) Generate Token with orgName
+	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), org.Name, user.Role)
 	return token, user, err
 }
 
@@ -81,9 +81,14 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (string, *models
 		return "", nil, err
 	}
 	if user == nil || !utils.CheckPassword(user.PasswordHash, in.Password) {
-		// Deliberately vague error — see note below.
 		return "", nil, errors.New("invalid credentials")
 	}
-	token, err := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), user.Role)
+
+	// Fetch organization name for the token
+	var org models.Organization
+	config.Database.Collection("organizations").FindOne(ctx, bson.M{"_id": user.OrganizationID}).Decode(&org)
+
+	// Generate Token with orgName
+	token, err := utils.GenerateToken(user.ID.Hex(), user.OrganizationID.Hex(), org.Name, user.Role)
 	return token, user, err
 }

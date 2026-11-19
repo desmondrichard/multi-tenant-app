@@ -14,17 +14,27 @@ import {
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import AIChatbot from "./AIChatbot";
 
 export default function Layout() {
-  const { user } = useSelector((state) => state.auth);
+  const { user, token } = useSelector((state) => state.auth); // <-- Get token
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [isNotifOpen, setIsNotifOpen] = useState(false);
 
-  // Fetch Notifications (polls every 30 seconds for new ones)
+  // Decode JWT to get the dynamic Organization Name
+  let orgName = "Your Workspace";
+  if (token) {
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      orgName = payload.orgName || "Your Workspace";
+    } catch (e) {
+      console.error("Failed to decode token");
+    }
+  }
+
+  // Fetch Notifications
   const { data: notifications } = useQuery({
     queryKey: ["notifications"],
     queryFn: async () => {
@@ -36,7 +46,6 @@ export default function Layout() {
 
   const unreadCount = notifications?.filter((n) => !n.isRead).length || 0;
 
-  // Mark notification as read
   const markReadMutation = useMutation({
     mutationFn: (id) => api.patch(`/notifications/${id}/read`),
     onSuccess: () => {
@@ -103,9 +112,7 @@ export default function Layout() {
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8">
           <div className="text-sm text-slate-500">
             Workspace:{" "}
-            <span className="font-semibold text-slate-900">
-              ABC Technologies
-            </span>
+            <span className="font-semibold text-slate-900">{orgName}</span>
           </div>
 
           <div className="flex items-center gap-5">
@@ -185,7 +192,6 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
-      <AIChatbot />
     </div>
   );
 }

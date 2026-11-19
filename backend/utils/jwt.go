@@ -12,11 +12,12 @@ import (
 type Claims struct {
 	UserID         string `json:"userId"`
 	OrganizationID string `json:"organizationId"`
+	OrgName        string `json:"orgName"` // <-- Added
 	Role           string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-func GenerateToken(userID, orgID, role string) (string, error) {
+func GenerateToken(userID, orgID, orgName, role string) (string, error) {
 	hours, _ := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
 	if hours == 0 {
 		hours = 72
@@ -24,6 +25,7 @@ func GenerateToken(userID, orgID, role string) (string, error) {
 	claims := Claims{
 		UserID:         userID,
 		OrganizationID: orgID,
+		OrgName:        orgName, // <-- Added
 		Role:           role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(hours) * time.Hour)),
