@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type TaskController struct {
@@ -272,4 +274,34 @@ func (t *TaskController) UpdateSubtask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"id": subtaskID, "title": in.Title, "description": in.Description})
+}
+
+// Delete soft-deletes a task: it is hidden from the app but stays in the database
+func (t *TaskController) Delete(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	if err := t.Repo.SoftDelete(c.Request.Context(), orgID, taskID, userID); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	t.ActivityRepo.Create(c.Request.Context(), &models.Activity{
+		OrganizationID: orgID,
+		TaskID:         taskID,
+		UserID:         userID,
+		Action:         models.ActionDeletedTask,
+		Details:        "Deleted the task",
+	})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Task deleted"})
 }

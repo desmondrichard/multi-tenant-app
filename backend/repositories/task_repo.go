@@ -32,6 +32,7 @@ func (r *TaskRepo) ListByProject(ctx context.Context, orgID, projectID primitive
 	filter := bson.M{
 		"organizationId": orgID,
 		"projectId":      projectID,
+		"deletedAt":      nil, // hide soft-deleted tasks
 	}
 
 	if search != "" {
@@ -80,6 +81,7 @@ func (r *TaskRepo) UpdateStatus(ctx context.Context, orgID, taskID primitive.Obj
 	filter := bson.M{
 		"_id":            taskID,
 		"organizationId": orgID,
+		"deletedAt":      nil,
 	}
 	update := bson.M{"$set": bson.M{"status": status}}
 	_, err := r.coll().UpdateOne(ctx, filter, update)
@@ -91,6 +93,7 @@ func (r *TaskRepo) FindByID(ctx context.Context, orgID, taskID primitive.ObjectI
 	filter := bson.M{
 		"_id":            taskID,
 		"organizationId": orgID,
+		"deletedAt":      nil,
 	}
 	err := r.coll().FindOne(ctx, filter).Decode(&task)
 	if err == mongo.ErrNoDocuments {
@@ -106,6 +109,7 @@ func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.O
 	filter := bson.M{
 		"organizationId": orgID,
 		"assigneeId":     userID,
+		"deletedAt":      nil,
 	}
 	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
 	cursor, err := r.coll().Find(ctx, filter, opts)
@@ -122,7 +126,7 @@ func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.O
 }
 
 func (r *TaskRepo) AddSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtask models.Subtask) error {
-	filter := bson.M{"_id": taskID, "organizationId": orgID}
+	filter := bson.M{"_id": taskID, "organizationId": orgID, "deletedAt": nil}
 
 	// If subtasks is null or doesn't exist, $push will fail.
 	// We use an aggregation pipeline to check and initialize the array first.
@@ -158,6 +162,7 @@ func (r *TaskRepo) ToggleSubtask(ctx context.Context, orgID, taskID primitive.Ob
 	filter := bson.M{
 		"_id":            taskID,
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"subtasks.id":    subtaskID, // Matches bson:"id" from models.Subtask
 	}
 	update := bson.M{"$set": bson.M{"subtasks.$.completed": completed}}
@@ -170,6 +175,7 @@ func (r *TaskRepo) UpdateSubtaskDetails(ctx context.Context, orgID, taskID primi
 	filter := bson.M{
 		"_id":            taskID,
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"subtasks.id":    subtaskID,
 	}
 	update := bson.M{"$set": bson.M{
@@ -186,7 +192,7 @@ func (r *TaskRepo) UpdateSubtaskDetails(ctx context.Context, orgID, taskID primi
 	return nil
 }
 
-// HasSubtask checks that a subtask belongs to the task and returns it
+// HasSubtask checks that a subtask belongs to the task
 func (r *TaskRepo) HasSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtaskID string) (*models.Subtask, error) {
 	task, err := r.FindByID(ctx, orgID, taskID)
 	if err != nil || task == nil {
@@ -198,4 +204,26 @@ func (r *TaskRepo) HasSubtask(ctx context.Context, orgID, taskID primitive.Objec
 		}
 	}
 	return nil, nil
+}
+
+// SoftDelete hides a task (sets deletedAt) but keeps it in the database.
+// Returns mongo.ErrNoDocuments if the task doesn't exist or is already deleted.
+func (r *TaskRepo) SoftDelete(ctx context.Context, orgID, taskID, userID primitive.ObjectID) error {
+	filter := bson.M{
+		"_id":            taskID,
+		"organizationId": orgID,
+		"deletedAt":      nil,
+	}
+	update := bson.M{"$set": bson.M{
+		"deletedAt": time.Now(),
+		"deletedBy": userID,
+	}}
+	res, err := r.coll().UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }

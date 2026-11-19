@@ -14,4 +14,8 @@ type Project struct {
 	Description    string             `bson:"description" json:"description"`
 	CreatedBy      primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	CreatedAt      time.Time          `bson:"createdAt" json:"createdAt"`
+
+	// Soft delete: the document stays in the database, it is just hidden
+	DeletedAt *time.Time         `bson:"deletedAt,omitempty" json:"deletedAt,omitempty"`
+	DeletedBy primitive.ObjectID `bson:"deletedBy,omitempty" json:"deletedBy,omitempty"`
 }

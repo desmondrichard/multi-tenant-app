@@ -1,12 +1,14 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type ProjectController struct {
@@ -51,4 +53,25 @@ func (p *ProjectController) List(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, projects)
+}
+
+// Delete soft-deletes a project and its tasks: hidden from the app, kept in the database
+func (p *ProjectController) Delete(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	projectID, err := primitive.ObjectIDFromHex(c.Param("projectId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	if err := p.Repo.SoftDelete(c.Request.Context(), orgID, projectID, userID); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Project deleted"})
 }

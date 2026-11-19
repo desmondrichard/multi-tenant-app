@@ -11,6 +11,7 @@ const (
 	ActionChangedStatus = "changed_status"
 	ActionAddedComment  = "added_comment"
 	ActionAssignedTask  = "assigned_task"
+	ActionDeletedTask   = "deleted_task"
 )
 
 type Activity struct {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSelector } from "react-redux";
 import { api } from "../lib/api";
@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Clock,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import TaskDrawer from "../components/TaskDrawer";
 
@@ -26,6 +27,7 @@ const COLUMNS = [
 export default function ProjectBoard() {
   const { projectId } = useParams();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { user } = useSelector((state) => state.auth);
 
   // Standard Modal States
@@ -135,6 +137,45 @@ export default function ProjectBoard() {
     onError: () => toast.error("Failed to move task"),
   });
 
+  // Soft delete a task (hidden, but kept in the database)
+  const deleteTaskMutation = useMutation({
+    mutationFn: (taskId) =>
+      api.delete(`/projects/${projectId}/tasks/${taskId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+      toast.success("Task deleted");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to delete task"),
+  });
+
+  // Soft delete this whole project (and its tasks)
+  const deleteProjectMutation = useMutation({
+    mutationFn: () => api.delete(`/projects/${projectId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+      toast.success("Project deleted");
+      navigate("/projects");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to delete project"),
+  });
+
+  const handleDeleteProject = () => {
+    if (
+      window.confirm(
+        "Delete this project and all of its tasks? Members will no longer see it.",
+      )
+    ) {
+      deleteProjectMutation.mutate();
+    }
+  };
+
   // AI Mutation
   const aiMutation = useMutation({
     mutationFn: (prompt) =>
@@ -172,6 +213,14 @@ export default function ProjectBoard() {
         </div>
 
         <div className="flex gap-3">
+          <button
+            onClick={handleDeleteProject}
+            disabled={deleteProjectMutation.isPending}
+            className="flex items-center gap-2 bg-white text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-50 transition-colors disabled:opacity-50"
+          >
+            <Trash2 className="w-4 h-4" /> Delete Project
+          </button>
+
           <button
             onClick={() => setIsAIModalOpen(true)}
             className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors"
@@ -282,9 +331,25 @@ export default function ProjectBoard() {
                       onClick={() => setSelectedTask(task)}
                       className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 hover:border-brand-400 transition-colors group cursor-pointer"
                     >
-                      <h4 className="font-medium text-slate-900 mb-2">
-                        {task.title}
-                      </h4>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <h4 className="font-medium text-slate-900">
+                          {task.title}
+                        </h4>
+                        <button
+                          title="Delete task"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (
+                              window.confirm(`Delete task "${task.title}"?`)
+                            ) {
+                              deleteTaskMutation.mutate(task.id);
+                            }
+                          }}
+                          className="p-1 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded transition-colors shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                       <p className="text-xs text-slate-500 line-clamp-2 mb-3">
                         {task.description}
                       </p>

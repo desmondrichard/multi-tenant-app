@@ -109,6 +109,7 @@ func Setup(r *gin.Engine) {
 			{
 				projects.GET("", projectCtrl.List)
 				projects.POST("", middleware.RequireRole("owner", "admin", "manager"), projectCtrl.Create)
+				projects.DELETE("/:projectId", middleware.RequireRole("owner", "admin", "manager", "member"), projectCtrl.Delete)
 			}
 
 			// Tasks
@@ -117,6 +118,7 @@ func Setup(r *gin.Engine) {
 				tasks.GET("", taskCtrl.ListByProject)
 				tasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Create)
 				tasks.PATCH("/:taskId/status", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.UpdateStatus)
+				tasks.DELETE("/:taskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Delete)
 			}
 
 			// Subtasks

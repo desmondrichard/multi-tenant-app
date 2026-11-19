@@ -17,30 +17,34 @@ func (a *AnalyticsController) GetDashboardStats(c *gin.Context) {
 
 	// 1. Count Projects
 	projectsColl := config.Database.Collection("projects")
-	totalProjects, _ := projectsColl.CountDocuments(ctx, bson.M{"organizationId": orgID})
+	totalProjects, _ := projectsColl.CountDocuments(ctx, bson.M{"organizationId": orgID, "deletedAt": nil})
 
 	// 2. Count Tasks by Status
 	tasksColl := config.Database.Collection("tasks")
 
-	totalTasks, _ := tasksColl.CountDocuments(ctx, bson.M{"organizationId": orgID})
+	totalTasks, _ := tasksColl.CountDocuments(ctx, bson.M{"organizationId": orgID, "deletedAt": nil})
 
 	completedTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"status":         "done",
 	})
 
 	underReviewTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"status":         "under_review", // <-- Added
 	})
 
 	inProgressTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"status":         "in_progress",
 	})
 
 	todoTasks, _ := tasksColl.CountDocuments(ctx, bson.M{
 		"organizationId": orgID,
+		"deletedAt":      nil,
 		"status":         "todo",
 	})
 

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom"; // <-- Added this import
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { Plus, FolderKanban } from "lucide-react";
+import { Plus, FolderKanban, Trash2 } from "lucide-react";
 
 export default function Projects() {
   const queryClient = useQueryClient();
@@ -34,6 +34,20 @@ export default function Projects() {
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || "Failed to create project");
+    },
+  });
+
+  // Soft delete (project + its tasks are hidden, kept in the database)
+  const deleteMutation = useMutation({
+    mutationFn: (projectId) => api.delete(`/projects/${projectId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+      toast.success("Project deleted");
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || "Failed to delete project");
     },
   });
 
@@ -84,9 +98,26 @@ export default function Projects() {
                   <div className="w-10 h-10 rounded-lg bg-brand-50 text-brand-600 flex items-center justify-center font-bold">
                     {project.key}
                   </div>
-                  <h3 className="font-semibold text-slate-900">
+                  <h3 className="font-semibold text-slate-900 flex-1">
                     {project.name}
                   </h3>
+                  <button
+                    title="Delete project"
+                    onClick={(e) => {
+                      e.preventDefault(); // don't open the board
+                      e.stopPropagation();
+                      if (
+                        window.confirm(
+                          `Delete project "${project.name}" and all of its tasks?`,
+                        )
+                      ) {
+                        deleteMutation.mutate(project.id);
+                      }
+                    }}
+                    className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
                 <p className="text-sm text-slate-500 line-clamp-2">
                   {project.description || "No description provided."}

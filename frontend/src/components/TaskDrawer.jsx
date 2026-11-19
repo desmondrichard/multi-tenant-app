@@ -2,20 +2,19 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { X, Send, User, Clock } from "lucide-react";
-import { useSelector } from "react-redux";
+import { X, Send, User, Clock, Trash2 } from "lucide-react";
 import SubtaskItem from "./SubtaskItem";
 
 export default function TaskDrawer({ task, projectId, members, onClose }) {
   const queryClient = useQueryClient();
-  const { user } = useSelector((state) => state.auth);
   const [content, setContent] = useState("");
   const [newSubtask, setNewSubtask] = useState("");
+  const [activeTab, setActiveTab] = useState("details"); // details | comments | activity
 
-  // 1. Create local state for subtasks to make the UI instant
+  // Local state for subtasks to make the UI instant
   const [localSubtasks, setLocalSubtasks] = useState(task.subtasks || []);
 
-  // 2. Sync local state if the parent task updates
+  // Sync local state if the parent task updates
   useEffect(() => {
     setLocalSubtasks(task.subtasks || []);
   }, [task.subtasks]);
@@ -48,7 +47,7 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
     onError: () => toast.error("Failed to add comment"),
   });
 
-  // 3. Add Subtask Mutation (Optimistic)
+  // Add Subtask Mutation (Optimistic)
   const addSubtaskMutation = useMutation({
     mutationFn: (title) => api.post(`/tasks/${task.id}/subtasks`, { title }),
     onMutate: async (newTitle) => {
@@ -78,7 +77,7 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
     },
   });
 
-  // 4. Toggle Subtask Mutation (Only ONE definition here)
+  // Toggle Subtask Mutation
   const toggleSubtaskMutation = useMutation({
     mutationFn: ({ subtaskId, completed }) =>
       api.patch(`/tasks/${task.id}/subtasks/${subtaskId}`, { completed }),
@@ -98,6 +97,26 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
     },
   });
 
+  // Soft delete: the task is hidden but stays in the database
+  const deleteTaskMutation = useMutation({
+    mutationFn: () => api.delete(`/projects/${projectId}/tasks/${task.id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+      toast.success("Task deleted");
+      onClose();
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to delete task"),
+  });
+
+  const handleDelete = () => {
+    if (window.confirm(`Delete task "${task.title}"?`)) {
+      deleteTaskMutation.mutate();
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!content.trim()) return;
@@ -109,6 +128,12 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
     task.dueDate &&
     new Date(task.dueDate) < new Date() &&
     task.status !== "done";
+
+  const tabs = [
+    { id: "details", label: "Details" },
+    { id: "comments", label: "Comments", count: comments?.length || 0 },
+    { id: "activity", label: "Activity" },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity">
@@ -143,127 +168,122 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
               )}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-slate-100 rounded-full transition-colors"
-          >
-            <X className="w-5 h-5 text-slate-500" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleDelete}
+              disabled={deleteTaskMutation.isPending}
+              title="Delete task"
+              className="p-2 hover:bg-red-50 rounded-full transition-colors disabled:opacity-50"
+            >
+              <Trash2 className="w-5 h-5 text-red-500" />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <X className="w-5 h-5 text-slate-500" />
+            </button>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-200 px-6">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-2 ${
+                activeTab === tab.id
+                  ? "border-brand-600 text-brand-600"
+                  : "border-transparent text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {tab.label}
+              {tab.count > 0 && (
+                <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-xs">
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-8">
-          {/* Description */}
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 mb-2">
-              Description
-            </h3>
-            <p className="text-sm text-slate-700 bg-slate-50 p-4 rounded-lg">
-              {task.description || "No description provided."}
-            </p>
-          </div>
+          {/* ---------- DETAILS TAB ---------- */}
+          {activeTab === "details" && (
+            <>
+              {/* Description */}
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 mb-2">
+                  Description
+                </h3>
+                <p className="text-sm text-slate-700 bg-slate-50 p-4 rounded-lg">
+                  {task.description || "No description provided."}
+                </p>
+              </div>
 
-          {/* Subtasks */}
-          <div>
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="text-sm font-semibold text-slate-900">Subtasks</h3>
-              <span className="text-xs text-slate-500">
-                {localSubtasks.filter((s) => s.completed).length} /{" "}
-                {localSubtasks.length} done
-              </span>
-            </div>
+              {/* Subtasks */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Subtasks
+                  </h3>
+                  <span className="text-xs text-slate-500">
+                    {localSubtasks.filter((s) => s.completed).length} /{" "}
+                    {localSubtasks.length} done
+                  </span>
+                </div>
 
-            <div className="space-y-2 mb-3">
-              {localSubtasks.map((subtask) => (
-                <SubtaskItem
-                  key={subtask.id}
-                  taskId={task.id}
-                  subtask={subtask}
-                  members={members}
-                  onToggle={(subtaskId, completed) =>
-                    toggleSubtaskMutation.mutate({ subtaskId, completed })
-                  }
-                  onUpdated={(updated) =>
-                    setLocalSubtasks((prev) =>
-                      prev.map((s) => (s.id === updated.id ? updated : s)),
-                    )
-                  }
-                />
-              ))}
-            </div>
+                <div className="space-y-2 mb-3">
+                  {localSubtasks.map((subtask) => (
+                    <SubtaskItem
+                      key={subtask.id}
+                      taskId={task.id}
+                      subtask={subtask}
+                      members={members}
+                      onToggle={(subtaskId, completed) =>
+                        toggleSubtaskMutation.mutate({ subtaskId, completed })
+                      }
+                      onUpdated={(updated) =>
+                        setLocalSubtasks((prev) =>
+                          prev.map((s) => (s.id === updated.id ? updated : s)),
+                        )
+                      }
+                    />
+                  ))}
+                </div>
 
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (newSubtask.trim()) addSubtaskMutation.mutate(newSubtask);
-              }}
-              className="flex gap-2"
-            >
-              <input
-                type="text"
-                value={newSubtask}
-                onChange={(e) => setNewSubtask(e.target.value)}
-                placeholder="Add a subtask..."
-                className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
-              />
-              <button
-                type="submit"
-                disabled={!newSubtask.trim()}
-                className="text-sm font-medium text-brand-600 hover:text-brand-700 px-2 disabled:opacity-50"
-              >
-                Add
-              </button>
-            </form>
-          </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (newSubtask.trim())
+                      addSubtaskMutation.mutate(newSubtask);
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    type="text"
+                    value={newSubtask}
+                    onChange={(e) => setNewSubtask(e.target.value)}
+                    placeholder="Add a subtask..."
+                    className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newSubtask.trim()}
+                    className="text-sm font-medium text-brand-600 hover:text-brand-700 px-2 disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </form>
+              </div>
+            </>
+          )}
 
-          {/* Activity */}
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 mb-4">
-              Activity History
-            </h3>
+          {/* ---------- COMMENTS TAB ---------- */}
+          {activeTab === "comments" && (
             <div className="space-y-4">
-              {isLoadingActivities ? (
-                <p className="text-sm text-slate-400">Loading activity...</p>
-              ) : activities?.length === 0 ? (
-                <p className="text-sm text-slate-400">No activity yet.</p>
-              ) : (
-                activities?.map((activity) => {
-                  const activityUser = members?.find(
-                    (m) => m.id === activity.userId,
-                  );
-                  return (
-                    <div key={activity.id} className="flex gap-3 text-sm">
-                      <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">
-                        {activityUser?.name.charAt(0) || "U"}
-                      </div>
-                      <div>
-                        <span className="font-medium text-slate-900">
-                          {activityUser?.name || "User"}
-                        </span>
-                        <span className="text-slate-500">
-                          {" "}
-                          {activity.details}
-                        </span>
-                        <p className="text-[10px] text-slate-400">
-                          {new Date(activity.createdAt).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Comments */}
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
-              Comments{" "}
-              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-xs">
-                {comments?.length || 0}
-              </span>
-            </h3>
-            <div className="space-y-4 mb-6">
               {isLoadingComments ? (
                 <p className="text-sm text-slate-400">Loading comments...</p>
               ) : comments?.length === 0 ? (
@@ -301,28 +321,66 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
                 })
               )}
             </div>
-          </div>
+          )}
+
+          {/* ---------- ACTIVITY TAB ---------- */}
+          {activeTab === "activity" && (
+            <div className="space-y-4">
+              {isLoadingActivities ? (
+                <p className="text-sm text-slate-400">Loading activity...</p>
+              ) : activities?.length === 0 ? (
+                <p className="text-sm text-slate-400">No activity yet.</p>
+              ) : (
+                activities?.map((activity) => {
+                  const activityUser = members?.find(
+                    (m) => m.id === activity.userId,
+                  );
+                  return (
+                    <div key={activity.id} className="flex gap-3 text-sm">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">
+                        {activityUser?.name.charAt(0) || "U"}
+                      </div>
+                      <div>
+                        <span className="font-medium text-slate-900">
+                          {activityUser?.name || "User"}
+                        </span>
+                        <span className="text-slate-500">
+                          {" "}
+                          {activity.details}
+                        </span>
+                        <p className="text-[10px] text-slate-400">
+                          {new Date(activity.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Input */}
-        <div className="p-4 border-t border-slate-200 bg-white">
-          <form onSubmit={handleSubmit} className="flex gap-2">
-            <input
-              type="text"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Write a comment..."
-              className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-sm"
-            />
-            <button
-              type="submit"
-              disabled={createCommentMutation.isPending || !content.trim()}
-              className="bg-brand-600 text-white p-2 rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </form>
-        </div>
+        {/* Comment input (only on the Comments tab) */}
+        {activeTab === "comments" && (
+          <div className="p-4 border-t border-slate-200 bg-white">
+            <form onSubmit={handleSubmit} className="flex gap-2">
+              <input
+                type="text"
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Write a comment..."
+                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-sm"
+              />
+              <button
+                type="submit"
+                disabled={createCommentMutation.isPending || !content.trim()}
+                className="bg-brand-600 text-white p-2 rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );
