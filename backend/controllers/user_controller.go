@@ -44,7 +44,7 @@ func (u *UserController) ListMembers(c *gin.Context) {
 			}
 		}
 
-		// If no role is found, default to "member" (safety net)
+		// If no role is found, default to "member"
 		if roleForThisOrg == "" {
 			roleForThisOrg = "member"
 		}
