@@ -143,9 +143,16 @@ func (a *AIController) GenerateTask(c *gin.Context) {
 
 	// 1. Team members the AI can assign to
 	users, _ := a.UserRepo.ListByOrg(ctx, orgID)
-	userNames := make([]string, 0, len(users))
+	memberLines := make([]string, 0, len(users))
 	for _, u := range users {
-		userNames = append(userNames, u.Name)
+		role := models.RoleMember
+		for _, m := range u.Memberships {
+			if m.OrganizationID == orgID {
+				role = m.Role
+				break
+			}
+		}
+		memberLines = append(memberLines, fmt.Sprintf("%s (role: %s)", u.Name, role))
 	}
 
 	// 2. Build the prompt
@@ -154,27 +161,36 @@ func (a *AIController) GenerateTask(c *gin.Context) {
 into ONE complete task with subtasks. Fill every field like a person using the "New Task" form would.
 
 Today's date is %s (%s).
-Team members you may assign to: %s
+Team members you may assign to (name and role): %s
 
 Rules:
 - "title": short and clear (max 80 characters). Do not copy the whole prompt.
 - "description": 1-3 sentences explaining what must be done and why.
 - "priority": "low", "medium" or "high". Use "high" for words like urgent, critical, ASAP, bug, blocker. Default "medium".
 - "status": "todo", "in_progress", "under_review" or "done". Default "todo". Only change it if the user clearly says so (e.g. "already started" = in_progress).
-- "assignee": the EXACT name from the team members list if the user mentions someone (even by first name). Otherwise "".
+- "assignee": the EXACT name from the team members list if the user mentions someone (even by first name). If the user says a ROLE (e.g. "owner", "admin"), pick the member with that role. Otherwise "".
 - "dueDate": format YYYY-MM-DD. Work out relative dates ("tomorrow", "next Friday", "in 2 weeks", "end of month") from today's date. If the user gives no date, use "".
-- "subtasks": if the user lists steps, use them. Otherwise create 3 to 6 short, actionable subtasks that break the task down. Each subtask needs a "title" and a one-sentence "description".
+- "subtasks": if the user says they do NOT want subtasks (e.g. "no subtasks", "without sub tasks"), return an empty list []. If the user lists steps, use them. Otherwise create 3 to 6 short, actionable subtasks that break the task down. Each subtask needs a "title" and a one-sentence "description".
+- If the user gives explicit values (like "title: ...", "description: ...", "priority: ...", "due date: ..."), use those values exactly.
 
-User request: %q`, now.Format("2006-01-02"), now.Weekday(), strings.Join(userNames, ", "), in.Prompt)
+User request: %q`, now.Format("2006-01-02"), now.Weekday(), strings.Join(memberLines, ", "), in.Prompt)
 
 	// 3. Call Gemini (forced to return JSON in our schema)
 	aiResponse, err := callGemini(prompt, &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 		ResponseSchema:   taskSchema(),
 	})
+	// If the model rejected the schema (HTTP 400), retry with plain JSON mode
+	if err != nil && isBadRequestError(err) {
+		fmt.Println("↩️ Retrying without response schema:", err)
+		aiResponse, err = callGemini(prompt, &genai.GenerateContentConfig{
+			ResponseMIMEType: "application/json",
+		})
+	}
 	if err != nil {
 		fmt.Println("❌ AI error:", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The AI is busy right now. Please try again in a moment."})
+		status, msg := aiErrorMessage(err)
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 
@@ -337,7 +353,9 @@ func (a *AIController) AskAI(c *gin.Context) {
 	// 4. Call Gemini
 	answer, err := callGeminiWithSDK(prompt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI is busy, please try again."})
+		fmt.Println("❌ AI error:", err)
+		status, msg := aiErrorMessage(err)
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 
@@ -350,7 +368,54 @@ func callGeminiWithSDK(prompt string) (string, error) {
 	return callGemini(prompt, nil)
 }
 
-// callGemini sends the prompt. Pass a config to force a JSON response schema.
+// geminiModels returns the models to try, in order.
+// Override with GEMINI_MODELS=model-a,model-b in .env if Google renames models.
+func geminiModels() []string {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_MODELS")); v != "" {
+		list := []string{}
+		for _, m := range strings.Split(v, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				list = append(list, m)
+			}
+		}
+		if len(list) > 0 {
+			return list
+		}
+	}
+	return []string{"gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"}
+}
+
+func isRetryableAIError(err error) bool {
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "503") || strings.Contains(e, "unavailable") ||
+		strings.Contains(e, "overloaded") || strings.Contains(e, "429") ||
+		strings.Contains(e, "resource_exhausted")
+}
+
+func isBadRequestError(err error) bool {
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "400") || strings.Contains(e, "invalid_argument")
+}
+
+// aiErrorMessage turns a Gemini error into a clear message for the user
+func aiErrorMessage(err error) (int, string) {
+	e := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(e, "gemini_api_key is missing"):
+		return http.StatusInternalServerError, "AI is not configured on the server: GEMINI_API_KEY is missing."
+	case strings.Contains(e, "api key not valid") || strings.Contains(e, "api_key_invalid") ||
+		strings.Contains(e, "permission_denied") || strings.Contains(e, "403"):
+		return http.StatusBadGateway, "Google rejected the AI key. Check GEMINI_API_KEY on the server."
+	case strings.Contains(e, "429") || strings.Contains(e, "resource_exhausted") || strings.Contains(e, "quota"):
+		return http.StatusTooManyRequests, "AI usage limit reached. Please wait a minute and try again."
+	case strings.Contains(e, "503") || strings.Contains(e, "unavailable") || strings.Contains(e, "overloaded"):
+		return http.StatusServiceUnavailable, "Gemini is overloaded right now. Please try again in a moment."
+	}
+	return http.StatusBadGateway, "The AI request failed. Please try again."
+}
+
+// callGemini sends the prompt. Pass a config to force a JSON response.
+// It tries each model, and retries once on temporary overload / rate limits.
 func callGemini(prompt string, cfg *genai.GenerateContentConfig) (string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -367,36 +432,55 @@ func callGemini(prompt string, cfg *genai.GenerateContentConfig) (string, error)
 		return "", fmt.Errorf("client init failed: %v", err)
 	}
 
-	modelsList := []string{"gemini-flash-latest", "gemini-2.5-flash", "gemini-3.8-flash"}
 	var lastErr error
 
-	for _, modelName := range modelsList {
-		fmt.Printf("🔄 Trying model: %s\n", modelName)
+	for _, modelName := range geminiModels() {
+		for attempt := 1; attempt <= 2; attempt++ {
+			fmt.Printf("🔄 Trying model: %s (attempt %d)\n", modelName, attempt)
 
-		resp, err := client.Models.GenerateContent(ctx, modelName,
-			[]*genai.Content{
-				{Parts: []*genai.Part{{Text: prompt}}},
-			}, cfg)
+			resp, err := client.Models.GenerateContent(ctx, modelName,
+				[]*genai.Content{
+					{Parts: []*genai.Part{{Text: prompt}}},
+				}, cfg)
 
-		if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-			text := resp.Candidates[0].Content.Parts[0].Text
-			fmt.Printf("✅ Success with model: %s\n", modelName)
-			return cleanJSON(text), nil
+			if err == nil && resp != nil && len(resp.Candidates) > 0 &&
+				resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
+				text := resp.Candidates[0].Content.Parts[0].Text
+				fmt.Printf("✅ Success with model: %s\n", modelName)
+				return extractJSON(text), nil
+			}
+
+			if err == nil {
+				err = fmt.Errorf("model %s returned an empty response", modelName)
+			}
+			lastErr = err
+			fmt.Printf("⚠️ Model %s failed: %v\n", modelName, err)
+
+			// Temporary overload / rate limit: wait a little and try the same model once more
+			if attempt == 1 && isRetryableAIError(err) {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			break
 		}
 
-		lastErr = err
-		fmt.Printf("⚠️ Model %s failed: %v\n", modelName, err)
+		// A bad key / bad request will fail on every model - stop early
+		if lastErr != nil && (strings.Contains(strings.ToLower(lastErr.Error()), "api key not valid") ||
+			strings.Contains(strings.ToLower(lastErr.Error()), "api_key_invalid")) {
+			break
+		}
 	}
 
 	return "", fmt.Errorf("all AI models failed. Last error: %v", lastErr)
 }
 
-func cleanJSON(s string) string {
-	if len(s) > 7 && s[:7] == "```json" {
-		s = s[7:]
-	}
-	if len(s) > 3 && s[len(s)-3:] == "```" {
-		s = s[:len(s)-3]
+// extractJSON removes markdown fences and any text around the JSON object
+func extractJSON(s string) string {
+	s = strings.TrimSpace(s)
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start >= 0 && end > start {
+		return s[start : end+1]
 	}
 	return s
 }
