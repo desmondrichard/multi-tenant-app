@@ -46,7 +46,11 @@ func Setup(r *gin.Engine) {
 	}
 
 	// Activities
-	activityCtrl := &controllers.ActivityController{Repo: activityRepo}
+	activityCtrl := &controllers.ActivityController{
+		Repo:     activityRepo,
+		TaskRepo: taskRepo,
+		UserRepo: userRepo,
+	}
 
 	// Notifications
 	notifCtrl := &controllers.NotificationController{Repo: notificationRepo}
@@ -109,6 +113,7 @@ func Setup(r *gin.Engine) {
 			tasks := protected.Group("/projects/:projectId/tasks")
 			{
 				tasks.GET("", taskCtrl.ListByProject)
+				tasks.GET("/:taskId", taskCtrl.Get)
 				tasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Create)
 				tasks.PATCH("/:taskId/status", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.UpdateStatus)
 				tasks.DELETE("/:taskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Delete)
@@ -142,10 +147,14 @@ func Setup(r *gin.Engine) {
 				activities.GET("", activityCtrl.ListByTask)
 			}
 
+			// Workspace activity feed (dashboard "Recent Activity" + /activity page)
+			protected.GET("/activities", activityCtrl.ListRecent)
+
 			// Notifications
 			notifications := protected.Group("/notifications")
 			{
 				notifications.GET("", notifCtrl.List)
+				notifications.PATCH("/read-all", notifCtrl.MarkAllAsRead)
 				notifications.PATCH("/:id/read", notifCtrl.MarkAsRead)
 			}
 

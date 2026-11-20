@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useSelector } from "react-redux";
@@ -7,10 +8,14 @@ import {
   Clock,
   Zap,
   ArrowRight,
-  CheckCircle2,
-  MessageSquare,
-  Plus,
 } from "lucide-react";
+import ActivityIcon from "../components/ActivityIcon";
+import {
+  describeActivity,
+  timeAgo,
+  activityLink,
+  useMinuteTick,
+} from "../lib/activity";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 
 export default function Dashboard() {
@@ -24,26 +29,17 @@ export default function Dashboard() {
     },
   });
 
-  const recentActivities = [
-    {
-      id: 1,
-      type: "done",
-      text: 'Task "Frontend UI" marked as Done',
-      time: "2 hours ago",
+  // Live data: the WebSocket handler refreshes ["activity-feed"] on every change
+  useMinuteTick();
+  const { data: feed, isLoading: isLoadingActivity } = useQuery({
+    queryKey: ["activity-feed", "recent"],
+    queryFn: async () => {
+      const res = await api.get("/activities?limit=5");
+      return res.data;
     },
-    {
-      id: 2,
-      type: "comment",
-      text: 'Kumar commented on "API Integration"',
-      time: "3 hours ago",
-    },
-    {
-      id: 3,
-      type: "created",
-      text: 'New task "Setup Database" created',
-      time: "5 hours ago",
-    },
-  ];
+    refetchInterval: 60000, // safety net if the WebSocket is down
+  });
+  const recentActivities = feed?.activities || [];
 
   if (isLoading)
     return <div className="p-8 text-slate-500">Loading dashboard...</div>;
@@ -203,43 +199,54 @@ export default function Dashboard() {
             <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
               <Zap className="w-5 h-5 text-brand-500" /> Recent Activity
             </h3>
-            <a
-              href="#"
+            <Link
+              to="/activity"
               className="text-sm font-medium text-brand-600 hover:text-brand-700 flex items-center gap-1"
             >
               View All <ArrowRight className="w-4 h-4" />
-            </a>
+            </Link>
           </div>
 
-          <div className="relative border-l border-slate-200 ml-3 space-y-8 pb-4">
-            {recentActivities.map((activity) => (
-              <div key={activity.id} className="relative pl-6">
-                <div
-                  className={`absolute -left-3 top-1 w-6 h-6 rounded-full flex items-center justify-center border-2 border-white shadow-sm
-                  ${
-                    activity.type === "done"
-                      ? "bg-green-100 text-green-600"
-                      : activity.type === "comment"
-                        ? "bg-purple-100 text-purple-600"
-                        : "bg-blue-100 text-blue-600"
-                  }`}
-                >
-                  {activity.type === "done" ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : activity.type === "comment" ? (
-                    <MessageSquare className="w-3.5 h-3.5" />
-                  ) : (
-                    <Plus className="w-3.5 h-3.5" />
-                  )}
-                </div>
-
-                <div>
-                  <p className="text-sm text-slate-700">{activity.text}</p>
-                  <p className="text-xs text-slate-400 mt-1">{activity.time}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+          {isLoadingActivity ? (
+            <p className="text-sm text-slate-400">Loading activity...</p>
+          ) : recentActivities.length === 0 ? (
+            <p className="text-sm text-slate-400">
+              No activity yet. Create a task to get started!
+            </p>
+          ) : (
+            <div className="relative border-l border-slate-200 ml-3 space-y-8 pb-4">
+              {recentActivities.map((activity) => {
+                const { type, text } = describeActivity(activity);
+                const link = activityLink(activity);
+                const content = (
+                  <div>
+                    <p className="text-sm text-slate-700">{text}</p>
+                    <p
+                      className="text-xs text-slate-400 mt-1"
+                      title={new Date(activity.createdAt).toLocaleString()}
+                    >
+                      {timeAgo(activity.createdAt)}
+                    </p>
+                  </div>
+                );
+                return (
+                  <div key={activity.id} className="relative pl-6">
+                    <ActivityIcon
+                      type={type}
+                      className="absolute -left-3 top-1"
+                    />
+                    {link ? (
+                      <Link to={link} className="block hover:opacity-80">
+                        {content}
+                      </Link>
+                    ) : (
+                      content
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

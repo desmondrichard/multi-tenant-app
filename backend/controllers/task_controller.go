@@ -93,9 +93,11 @@ func (t *TaskController) Create(c *gin.Context) {
 
 	// Send Notification
 	if !assigneeID.IsZero() && assigneeID != userID {
-		t.NotificationRepo.Create(c.Request.Context(), &models.Notification{
+		pushNotification(c.Request.Context(), t.NotificationRepo, &models.Notification{
 			OrganizationID: orgID,
 			UserID:         assigneeID,
+			TaskID:         task.ID,
+			ProjectID:      projectID,
 			Title:          "New Task Assigned",
 			Message:        "You have been assigned to: " + task.Title,
 		})
@@ -173,6 +175,19 @@ func (t *TaskController) UpdateStatus(c *gin.Context) {
 		Action:         models.ActionChangedStatus,
 		Details:        "Changed status to " + in.Status,
 	})
+
+	// Tell the assignee (if it is someone else) that the status changed
+	if task, _ := t.Repo.FindByID(c.Request.Context(), orgID, taskID); task != nil &&
+		!task.AssigneeID.IsZero() && task.AssigneeID != userID {
+		pushNotification(c.Request.Context(), t.NotificationRepo, &models.Notification{
+			OrganizationID: orgID,
+			UserID:         task.AssigneeID,
+			TaskID:         task.ID,
+			ProjectID:      task.ProjectID,
+			Title:          "Task Status Updated",
+			Message:        "\"" + task.Title + "\" moved to " + statusLabel(in.Status),
+		})
+	}
 
 	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: c.Param("projectId")})
 
@@ -311,4 +326,39 @@ func (t *TaskController) Delete(c *gin.Context) {
 	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: c.Param("projectId")})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Task deleted"})
+}
+
+func statusLabel(status string) string {
+	switch status {
+	case models.StatusTodo:
+		return "To Do"
+	case models.StatusInProgress:
+		return "In Progress"
+	case models.StatusUnderReview:
+		return "Under Review"
+	case models.StatusDone:
+		return "Done"
+	}
+	return status
+}
+
+// Get returns one task (used when opening a task from a notification or activity link)
+func (t *TaskController) Get(c *gin.Context) {
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	task, err := t.Repo.FindByID(c.Request.Context(), orgID, taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if task == nil || task.ProjectID.Hex() != c.Param("projectId") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+	c.JSON(http.StatusOK, task)
 }

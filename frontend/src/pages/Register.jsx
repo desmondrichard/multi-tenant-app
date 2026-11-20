@@ -62,7 +62,7 @@ export default function Register() {
       <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-sm border border-slate-200">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-slate-900">
-            Create an account
+            Create an Organization
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Start managing your projects today

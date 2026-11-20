@@ -35,6 +35,14 @@ export function WebSocketProvider({ children }) {
           toast.info("Your role in this workspace was updated.");
           break;
 
+        // A notification for THIS user: refresh the bell and show a toast
+        case "NOTIFICATION":
+          queryClient.invalidateQueries({ queryKey: ["notifications"] });
+          toast.info(data.title || "New notification", {
+            description: data.message,
+          });
+          break;
+
         case "NEW_COMMENT":
           if (data.subtaskId) {
             queryClient.invalidateQueries({
@@ -48,15 +56,18 @@ export function WebSocketProvider({ children }) {
           queryClient.invalidateQueries({
             queryKey: ["activities", data.taskId],
           });
+          queryClient.invalidateQueries({ queryKey: ["activity-feed"] });
           break;
 
         case "TASKS_UPDATED":
+          queryClient.invalidateQueries({ queryKey: ["activity-feed"] });
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           queryClient.invalidateQueries({ queryKey: ["analytics"] });
           queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
           break;
 
         case "PROJECTS_UPDATED":
+          queryClient.invalidateQueries({ queryKey: ["activity-feed"] });
           queryClient.invalidateQueries({ queryKey: ["projects"] });
           queryClient.invalidateQueries({ queryKey: ["tasks"] });
           queryClient.invalidateQueries({ queryKey: ["analytics"] });

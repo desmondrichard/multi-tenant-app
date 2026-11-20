@@ -227,3 +227,24 @@ func (r *TaskRepo) SoftDelete(ctx context.Context, orgID, taskID, userID primiti
 	}
 	return nil
 }
+
+// FindByIDs returns tasks (INCLUDING soft-deleted ones) so old activity can still show a title
+func (r *TaskRepo) FindByIDs(ctx context.Context, orgID primitive.ObjectID, ids []primitive.ObjectID) ([]models.Task, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cursor, err := r.coll().Find(ctx, bson.M{
+		"organizationId": orgID,
+		"_id":            bson.M{"$in": ids},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var tasks []models.Task
+	if err := cursor.All(ctx, &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}

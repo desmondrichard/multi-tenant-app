@@ -1,5 +1,10 @@
 import { useState, useEffect } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import {
+  useParams,
+  Link,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSelector } from "react-redux";
 import { api } from "../lib/api";
@@ -108,6 +113,18 @@ export default function ProjectBoard() {
     },
   });
 
+  // Open a task directly from a notification / activity link: /projects/:id?task=TASK_ID
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const taskId = searchParams.get("task");
+    if (!taskId) return;
+    api
+      .get(`/projects/${projectId}/tasks/${taskId}`)
+      .then((res) => setSelectedTask(res.data))
+      .catch(() => toast.error("That task no longer exists"))
+      .finally(() => setSearchParams({}, { replace: true }));
+  }, [searchParams, projectId, setSearchParams]);
+
   // Mutations
   const createMutation = useMutation({
     mutationFn: (newTask) => api.post(`/projects/${projectId}/tasks`, newTask),
@@ -139,8 +156,7 @@ export default function ProjectBoard() {
 
   // Soft delete a task (hidden, but kept in the database)
   const deleteTaskMutation = useMutation({
-    mutationFn: (taskId) =>
-      api.delete(`/projects/${projectId}/tasks/${taskId}`),
+    mutationFn: (taskId) => api.delete(`/projects/${projectId}/tasks/${taskId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["analytics"] });
@@ -339,9 +355,7 @@ export default function ProjectBoard() {
                           title="Delete task"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (
-                              window.confirm(`Delete task "${task.title}"?`)
-                            ) {
+                            if (window.confirm(`Delete task "${task.title}"?`)) {
                               deleteTaskMutation.mutate(task.id);
                             }
                           }}

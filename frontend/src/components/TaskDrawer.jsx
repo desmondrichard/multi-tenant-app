@@ -262,13 +262,20 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
                   }}
                   className="flex gap-2"
                 >
-                  <input
-                    type="text"
-                    value={newSubtask}
-                    onChange={(e) => setNewSubtask(e.target.value)}
-                    placeholder="Add a subtask..."
-                    className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
-                  />
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={newSubtask}
+                      onChange={(e) => setNewSubtask(e.target.value)}
+                      placeholder="Add a subtask..."
+                      className="w-full pr-7 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500"
+                    />
+                    {!newSubtask.trim() && (
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500 text-sm pointer-events-none">
+                        *
+                      </span>
+                    )}
+                  </div>
                   <button
                     type="submit"
                     disabled={!newSubtask.trim()}
@@ -364,13 +371,20 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
         {activeTab === "comments" && (
           <div className="p-4 border-t border-slate-200 bg-white">
             <form onSubmit={handleSubmit} className="flex gap-2">
-              <input
-                type="text"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Write a comment..."
-                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-sm"
-              />
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Write a comment..."
+                  className="w-full pr-8 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 text-sm"
+                />
+                {!content.trim() && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500 text-sm pointer-events-none">
+                    *
+                  </span>
+                )}
+              </div>
               <button
                 type="submit"
                 disabled={createCommentMutation.isPending || !content.trim()}

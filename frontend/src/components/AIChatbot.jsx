@@ -80,13 +80,20 @@ export default function AIChatbot() {
             onSubmit={handleSend}
             className="p-3 border-t border-slate-200 bg-white rounded-b-xl flex gap-2"
           >
-            <input
-              type="text"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Ask about tasks, projects..."
-              className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
+            <div className="relative flex-1">
+              <input
+                type="text"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask about tasks, projects..."
+                className="w-full pr-7 px-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500"
+              />
+              {!question.trim() && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500 text-sm pointer-events-none">
+                  *
+                </span>
+              )}
+            </div>
             <button
               type="submit"
               disabled={askMutation.isPending || !question.trim()}

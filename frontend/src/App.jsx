@@ -10,6 +10,7 @@ import ProjectBoard from "./pages/ProjectBoard";
 import Team from "./pages/Team";
 import AcceptInvite from "./pages/AcceptInvite";
 import MyTasks from "./pages/MyTasks";
+import Activity from "./pages/Activity";
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
             <Route path="/projects/:projectId" element={<ProjectBoard />} />
             <Route path="/team" element={<Team />} />
             <Route path="/tasks" element={<MyTasks />} />
+            <Route path="/activity" element={<Activity />} />
           </Route>
         </Route>
 

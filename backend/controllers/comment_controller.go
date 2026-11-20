@@ -77,9 +77,11 @@ func (c *CommentController) Create(ctx *gin.Context) {
 	// 2. Send Notification to Assignee
 	task, _ := c.TaskRepo.FindByID(ctx.Request.Context(), orgID, taskID)
 	if task != nil && !task.AssigneeID.IsZero() && task.AssigneeID != userID {
-		c.NotificationRepo.Create(ctx.Request.Context(), &models.Notification{
+		pushNotification(ctx.Request.Context(), c.NotificationRepo, &models.Notification{
 			OrganizationID: orgID,
 			UserID:         task.AssigneeID,
+			TaskID:         task.ID,
+			ProjectID:      task.ProjectID,
 			Title:          "New Comment",
 			Message:        notificationMessage(subtaskID, subtaskTitle, task.Title),
 		})

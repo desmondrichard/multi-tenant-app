@@ -127,7 +127,7 @@ export default function SubtaskItem({
           {/* Title + Description */}
           <div className="space-y-2">
             <label className="block text-xs font-semibold text-slate-600">
-              Title
+              Title <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
@@ -203,13 +203,20 @@ export default function SubtaskItem({
             </div>
 
             <form onSubmit={handleComment} className="flex gap-2">
-              <input
-                type="text"
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                placeholder="Comment on this subtask..."
-                className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
-              />
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Comment on this subtask..."
+                  className="w-full pr-7 px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
+                />
+                {!comment.trim() && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500 text-sm pointer-events-none">
+                    *
+                  </span>
+                )}
+              </div>
               <button
                 type="submit"
                 disabled={addCommentMutation.isPending || !comment.trim()}

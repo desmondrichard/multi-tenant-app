@@ -48,3 +48,37 @@ func (r *ActivityRepo) ListByTask(ctx context.Context, orgID, taskID primitive.O
 	}
 	return activities, nil
 }
+
+// ListByOrg returns the workspace-wide activity feed (newest first) with optional
+// filters. A zero userID means "all users"; action "" or "all" means "all actions".
+func (r *ActivityRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID, action string, userID primitive.ObjectID, page, limit int64) ([]models.Activity, int64, error) {
+	filter := bson.M{"organizationId": orgID}
+	if action != "" && action != "all" {
+		filter["action"] = action
+	}
+	if !userID.IsZero() {
+		filter["userId"] = userID
+	}
+
+	total, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetSkip((page - 1) * limit).
+		SetLimit(limit)
+
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var activities []models.Activity
+	if err := cursor.All(ctx, &activities); err != nil {
+		return nil, 0, err
+	}
+	return activities, total, nil
+}

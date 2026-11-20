@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { logout, updateToken } from "../store/authSlice";
@@ -10,11 +10,14 @@ import {
   LogOut,
   Bell,
   Check,
+  CheckCheck,
   Layers,
   ChevronDown,
+  Activity,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { timeAgo, useMinuteTick } from "../lib/activity";
 
 export default function Layout() {
   const { user } = useSelector((state) => state.auth);
@@ -29,24 +32,78 @@ export default function Layout() {
   const activeOrgId = user?.organizationId || "";
   const activeOrgName = user?.orgName || "Workspace";
 
-  // Fetch Notifications
-  const { data: notifications } = useQuery({
+  useMinuteTick(); // keeps "5 minutes ago" fresh
+  const notifRef = useRef(null);
+
+  // Fetch Notifications.
+  // Real-time: the WebSocket handler refreshes this on every NOTIFICATION event.
+  // The 30s interval + refetch on focus are only a safety net.
+  const { data: notifications, isFetching: isFetchingNotifs } = useQuery({
     queryKey: ["notifications"],
     queryFn: async () => {
       const res = await api.get("/notifications");
       return res.data;
     },
     refetchInterval: 30000,
+    refetchOnWindowFocus: true,
   });
 
   const unreadCount = notifications?.filter((n) => !n.isRead).length || 0;
 
+  // Close the dropdown when clicking outside of it
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setIsNotifOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  // Clicking the bell ALWAYS fetches the latest notifications
+  const toggleNotifications = () => {
+    const opening = !isNotifOpen;
+    setIsNotifOpen(opening);
+    if (opening) {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    }
+  };
+
   const markReadMutation = useMutation({
     mutationFn: (id) => api.patch(`/notifications/${id}/read`),
-    onSuccess: () => {
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["notifications"] });
+      queryClient.setQueryData(["notifications"], (old) =>
+        old?.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
+      );
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
   });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => api.patch("/notifications/read-all"),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["notifications"] });
+      queryClient.setQueryData(["notifications"], (old) =>
+        old?.map((n) => ({ ...n, isRead: true })),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+
+  // Click a notification: mark it read and open the task it is about
+  const handleNotificationClick = (notif) => {
+    if (!notif.isRead) markReadMutation.mutate(notif.id);
+    setIsNotifOpen(false);
+    if (notif.projectId && notif.taskId) {
+      navigate(`/projects/${notif.projectId}?task=${notif.taskId}`);
+    }
+  };
 
   const handleLogout = () => {
     dispatch(logout());
@@ -70,6 +127,7 @@ export default function Layout() {
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
     { name: "Projects", path: "/projects", icon: FolderKanban },
     { name: "My Tasks", path: "/tasks", icon: CheckSquare },
+    { name: "Activity", path: "/activity", icon: Activity },
     { name: "Team", path: "/team", icon: Users },
   ];
 
@@ -160,57 +218,72 @@ export default function Layout() {
 
           <div className="flex items-center gap-5">
             {/* Notification Bell */}
-            <div className="relative">
+            <div className="relative" ref={notifRef}>
               <button
-                onClick={() => setIsNotifOpen(!isNotifOpen)}
+                onClick={toggleNotifications}
                 className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors relative"
               >
                 <Bell className="w-5 h-5" />
                 {unreadCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full border-2 border-white flex items-center justify-center">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
                 )}
               </button>
 
               {/* Notification Dropdown */}
               {isNotifOpen && (
-                <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-slate-200 z-50 animate-in fade-in slide-in-from-top-2">
+                <div className="absolute right-0 mt-2 w-96 bg-white rounded-xl shadow-lg border border-slate-200 z-50 animate-in fade-in slide-in-from-top-2">
                   <div className="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
-                    <h3 className="font-semibold text-slate-900 text-sm">
-                      Notifications
-                    </h3>
-                    <span className="text-xs text-slate-500">
-                      {unreadCount} unread
-                    </span>
+                    <div>
+                      <h3 className="font-semibold text-slate-900 text-sm">
+                        Notifications
+                      </h3>
+                      <span className="text-xs text-slate-500">
+                        {isFetchingNotifs
+                          ? "Updating..."
+                          : `${unreadCount} unread`}
+                      </span>
+                    </div>
+                    {unreadCount > 0 && (
+                      <button
+                        onClick={() => markAllReadMutation.mutate()}
+                        className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-800"
+                      >
+                        <CheckCheck className="w-4 h-4" /> Mark all as read
+                      </button>
+                    )}
                   </div>
-                  <div className="max-h-80 overflow-y-auto">
-                    {notifications?.length === 0 ? (
+                  <div className="max-h-96 overflow-y-auto">
+                    {!notifications || notifications.length === 0 ? (
                       <p className="p-4 text-sm text-slate-500 text-center">
                         You're all caught up!
                       </p>
                     ) : (
-                      notifications?.map((notif) => (
-                        <div
+                      notifications.map((notif) => (
+                        <button
                           key={notif.id}
-                          className={`p-4 border-b border-slate-50 flex gap-3 transition-colors ${notif.isRead ? "opacity-60 bg-white" : "bg-brand-50/30"}`}
+                          onClick={() => handleNotificationClick(notif)}
+                          className={`w-full text-left p-4 border-b border-slate-50 flex gap-3 transition-colors hover:bg-slate-50 ${notif.isRead ? "opacity-60 bg-white" : "bg-brand-50/30"}`}
                         >
-                          <div className="flex-1">
+                          <span
+                            className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${notif.isRead ? "bg-transparent" : "bg-brand-500"}`}
+                          />
+                          <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-slate-900">
                               {notif.title}
                             </p>
                             <p className="text-xs text-slate-500 mt-1">
                               {notif.message}
                             </p>
-                          </div>
-                          {!notif.isRead && (
-                            <button
-                              onClick={() => markReadMutation.mutate(notif.id)}
-                              className="text-brand-600 hover:text-brand-800 self-start mt-1"
-                              title="Mark as read"
+                            <p
+                              className="text-[11px] text-slate-400 mt-1"
+                              title={new Date(notif.createdAt).toLocaleString()}
                             >
-                              <Check className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
+                              {timeAgo(notif.createdAt)}
+                            </p>
+                          </div>
+                        </button>
                       ))
                     )}
                   </div>

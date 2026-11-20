@@ -7,10 +7,12 @@ package websocket
 //   - OrgID set        -> only clients connected to that workspace get it
 //   - TargetUser set   -> only that user's connections get it
 type Event struct {
-	Type       string `json:"type"` // NEW_COMMENT, TASKS_UPDATED, PROJECTS_UPDATED, ROLE_CHANGED, FORCE_LOGOUT
+	Type       string `json:"type"` // NEW_COMMENT, TASKS_UPDATED, PROJECTS_UPDATED, NOTIFICATION, ROLE_CHANGED, FORCE_LOGOUT
 	OrgID      string `json:"orgId,omitempty"`
 	TargetUser string `json:"targetUserId,omitempty"`
 	ProjectID  string `json:"projectId,omitempty"`
 	TaskID     string `json:"taskId,omitempty"`
 	SubtaskID  string `json:"subtaskId,omitempty"`
+	Title      string `json:"title,omitempty"`   // used by NOTIFICATION toasts
+	Message    string `json:"message,omitempty"` // used by NOTIFICATION toasts
 }

@@ -84,3 +84,21 @@ func (r *UserRepo) RemoveMembership(ctx context.Context, orgID, userID primitive
 	_, err := r.coll().UpdateOne(ctx, filter, update)
 	return err
 }
+
+// FindByIDs returns users by their IDs (used to show names in the activity feed)
+func (r *UserRepo) FindByIDs(ctx context.Context, ids []primitive.ObjectID) ([]models.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	cursor, err := r.coll().Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var users []models.User
+	if err := cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}

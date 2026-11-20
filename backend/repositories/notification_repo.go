@@ -60,3 +60,14 @@ func (r *NotificationRepo) MarkAsRead(ctx context.Context, orgID, userID, notifI
 	_, err := r.coll().UpdateOne(ctx, filter, update)
 	return err
 }
+
+// MarkAllAsRead marks every unread notification of the user as read
+func (r *NotificationRepo) MarkAllAsRead(ctx context.Context, orgID, userID primitive.ObjectID) error {
+	filter := bson.M{
+		"organizationId": orgID,
+		"userId":         userID,
+		"isRead":         false,
+	}
+	_, err := r.coll().UpdateMany(ctx, filter, bson.M{"$set": bson.M{"isRead": true}})
+	return err
+}
