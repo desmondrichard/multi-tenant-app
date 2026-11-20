@@ -1,6 +1,9 @@
 import { createContext, useEffect, useRef } from "react";
 import { useSelector } from "react-redux";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { api } from "../lib/api";
+import { forceLogout } from "../lib/session";
 
 export const WebSocketContext = createContext(null);
 
@@ -10,48 +13,97 @@ export function WebSocketProvider({ children }) {
   const ws = useRef(null);
 
   useEffect(() => {
-    if (!isAuthenticated || !token) {
-      if (ws.current) ws.current.close();
-      return;
-    }
+    if (!isAuthenticated || !token) return;
 
-    // 1. Determine the correct WebSocket URL
-    // If we are in production, replace http/https with ws/wss
+    let closedByUs = false;
+    let retryTimer = null;
+
+    // Determine the correct WebSocket URL (http -> ws, https -> wss)
     const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080/api";
-    const wsUrl = apiUrl.replace(/^http/, "ws"); // turns http:// into ws://, https:// into wss://
+    const wsUrl = apiUrl.replace(/^http/, "ws");
 
-    // 2. Connect
-    ws.current = new WebSocket(`${wsUrl}/ws?token=${token}`);
+    const handleMessage = (data) => {
+      switch (data.type) {
+        // The owner/admin removed THIS user: log out immediately
+        case "FORCE_LOGOUT":
+          forceLogout("removed");
+          break;
 
-    ws.current.onopen = () => {
-      console.log("✅ WebSocket Connected");
-    };
+        // This user's role was changed: reload the profile
+        case "ROLE_CHANGED":
+          queryClient.invalidateQueries({ queryKey: ["me"] });
+          toast.info("Your role in this workspace was updated.");
+          break;
 
-    ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "NEW_COMMENT") {
-        console.log("📩 Real-time update received!");
-        // Instantly refetch comments and activities
-        if (data.subtaskId) {
+        case "NEW_COMMENT":
+          if (data.subtaskId) {
+            queryClient.invalidateQueries({
+              queryKey: ["subtask-comments", data.taskId, data.subtaskId],
+            });
+          } else {
+            queryClient.invalidateQueries({
+              queryKey: ["comments", data.taskId],
+            });
+          }
           queryClient.invalidateQueries({
-            queryKey: ["subtask-comments", data.taskId, data.subtaskId],
+            queryKey: ["activities", data.taskId],
           });
-        } else {
-          queryClient.invalidateQueries({
-            queryKey: ["comments", data.taskId],
-          });
-        }
-        queryClient.invalidateQueries({
-          queryKey: ["activities", data.taskId],
-        });
+          break;
+
+        case "TASKS_UPDATED":
+          queryClient.invalidateQueries({ queryKey: ["tasks"] });
+          queryClient.invalidateQueries({ queryKey: ["analytics"] });
+          queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+          break;
+
+        case "PROJECTS_UPDATED":
+          queryClient.invalidateQueries({ queryKey: ["projects"] });
+          queryClient.invalidateQueries({ queryKey: ["tasks"] });
+          queryClient.invalidateQueries({ queryKey: ["analytics"] });
+          queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+          break;
+
+        default:
+          break;
       }
     };
 
-    ws.current.onclose = () => {
-      console.log("❌ WebSocket Disconnected");
+    const connect = () => {
+      const socket = new WebSocket(`${wsUrl}/ws?token=${token}`);
+      ws.current = socket;
+      let opened = false;
+
+      socket.onopen = () => {
+        opened = true;
+        console.log("✅ WebSocket Connected");
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          handleMessage(JSON.parse(event.data));
+        } catch (e) {
+          console.error("Bad WebSocket message", e);
+        }
+      };
+
+      socket.onclose = () => {
+        console.log("❌ WebSocket Disconnected");
+        if (closedByUs) return;
+
+        // The server refuses the connection when the token is no longer valid
+        // (e.g. user removed). Ask /me: a 401 there logs the user out.
+        if (!opened) api.get("/me").catch(() => {});
+
+        // Reconnect after 3 seconds
+        retryTimer = setTimeout(connect, 3000);
+      };
     };
 
+    connect();
+
     return () => {
+      closedByUs = true;
+      clearTimeout(retryTimer);
       if (ws.current) ws.current.close();
     };
   }, [isAuthenticated, token, queryClient]);

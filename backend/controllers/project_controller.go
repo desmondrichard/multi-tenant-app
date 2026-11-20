@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -41,6 +42,8 @@ func (p *ProjectController) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	ws.Publish(ws.Event{Type: "PROJECTS_UPDATED", OrgID: orgID.Hex()})
+
 	c.JSON(http.StatusCreated, proj)
 }
 
@@ -73,5 +76,7 @@ func (p *ProjectController) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	ws.Publish(ws.Event{Type: "PROJECTS_UPDATED", OrgID: orgID.Hex()})
+
 	c.JSON(http.StatusOK, gin.H{"message": "Project deleted"})
 }

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useDispatch } from "react-redux";
 import { setCredentials } from "../store/authSlice";
 import { api } from "../lib/api";
@@ -18,6 +18,21 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
   const dispatch = useDispatch();
+  const [searchParams] = useSearchParams();
+
+  // Explain why the user landed here after being logged out automatically
+  useEffect(() => {
+    const reason = searchParams.get("reason");
+    if (reason === "removed") {
+      toast.error("You were removed from this workspace by an admin.", {
+        id: "session-ended",
+      });
+    } else if (reason === "expired") {
+      toast.error("Your session has expired. Please sign in again.", {
+        id: "session-ended",
+      });
+    }
+  }, [searchParams]);
 
   const {
     register,

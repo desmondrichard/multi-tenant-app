@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -86,11 +85,13 @@ func (c *CommentController) Create(ctx *gin.Context) {
 		})
 	}
 
-	// 3. Broadcast to WebSocket clients in the same Org (Run in background)
-	broadcastMsg := fmt.Sprintf(`{"type":"NEW_COMMENT","orgId":"%s","taskId":"%s","subtaskId":"%s"}`, orgID.Hex(), taskID.Hex(), subtaskID)
-	go func() {
-		ws.GlobalHub.Broadcast <- []byte(broadcastMsg)
-	}()
+	// 3. Publish through Redis -> every server pushes it to its WebSocket clients
+	ws.Publish(ws.Event{
+		Type:      "NEW_COMMENT",
+		OrgID:     orgID.Hex(),
+		TaskID:    taskID.Hex(),
+		SubtaskID: subtaskID,
+	})
 
 	// 4. Send the final HTTP response ONLY ONCE
 	ctx.JSON(http.StatusCreated, comment)
@@ -105,7 +106,6 @@ func (c *CommentController) ListByTask(ctx *gin.Context) {
 		return
 	}
 
-	// subtaskId is empty on the task route, set on the subtask route
 	comments, err := c.Repo.ListByTask(ctx.Request.Context(), orgID, taskID, ctx.Param("subtaskId"))
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

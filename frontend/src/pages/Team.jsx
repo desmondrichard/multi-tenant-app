@@ -7,18 +7,10 @@ import { useSelector } from "react-redux";
 
 export default function Team() {
   const queryClient = useQueryClient();
-  const { user, token } = useSelector((state) => state.auth);
+  const { user } = useSelector((state) => state.auth);
 
-  // Decode JWT to get the current user's role in this workspace
-  let currentRole = "member";
-  if (token) {
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      currentRole = payload.role;
-    } catch (e) {
-      console.error("Failed to decode token", e);
-    }
-  }
+  // Current user's role in this workspace (loaded from GET /me)
+  const currentRole = user?.role || "member";
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [inviteData, setInviteData] = useState({ email: "", role: "member" });
@@ -128,7 +120,7 @@ export default function Team() {
                         role: e.target.value,
                       })
                     }
-                    disabled={member.role === "owner" || member.id === user.id}
+                    disabled={member.role === "owner" || member.id === user?.id}
                     className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed ${
                       member.role === "owner"
                         ? "bg-amber-100 text-amber-800"
@@ -143,7 +135,7 @@ export default function Team() {
                   </select>
                 </td>
                 <td className="p-4 text-right">
-                  {member.role !== "owner" && member.id !== user.id && (
+                  {member.role !== "owner" && member.id !== user?.id && (
                     <button
                       onClick={() => {
                         if (

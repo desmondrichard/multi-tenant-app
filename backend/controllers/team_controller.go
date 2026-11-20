@@ -16,6 +16,7 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -261,6 +262,9 @@ func (t *TeamController) UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Tell that user's open tabs to reload their role immediately
+	ws.Publish(ws.Event{Type: "ROLE_CHANGED", OrgID: orgID.Hex(), TargetUser: userID.Hex()})
 	c.JSON(http.StatusOK, gin.H{"message": "Role updated successfully"})
 }
 
@@ -280,9 +284,23 @@ func (t *TeamController) RemoveUser(c *gin.Context) {
 		return
 	}
 
+	// An owner can never be removed
+	if target, _ := t.UserRepo.FindByID(c.Request.Context(), userID); target != nil {
+		for _, m := range target.Memberships {
+			if m.OrganizationID == orgID && m.Role == models.RoleOwner {
+				c.JSON(http.StatusForbidden, gin.H{"error": "The workspace owner cannot be removed"})
+				return
+			}
+		}
+	}
+
 	if err := t.UserRepo.RemoveMembership(c.Request.Context(), orgID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Log the removed user out IMMEDIATELY in every open tab / browser.
+	// (Even without this push, their next API call returns 401 ACCESS_REVOKED.)
+	ws.Publish(ws.Event{Type: "FORCE_LOGOUT", OrgID: orgID.Hex(), TargetUser: userID.Hex()})
 	c.JSON(http.StatusOK, gin.H{"message": "User removed successfully"})
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"google.golang.org/genai"
 )
@@ -105,6 +106,8 @@ func (a *AIController) GenerateTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save task"})
 		return
 	}
+
+	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: projectID.Hex()})
 
 	c.JSON(http.StatusOK, task)
 }

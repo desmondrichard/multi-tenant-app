@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -100,6 +101,8 @@ func (t *TaskController) Create(c *gin.Context) {
 		})
 	}
 
+	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: projectID.Hex()})
+
 	c.JSON(http.StatusCreated, task)
 }
 
@@ -170,6 +173,8 @@ func (t *TaskController) UpdateStatus(c *gin.Context) {
 		Action:         models.ActionChangedStatus,
 		Details:        "Changed status to " + in.Status,
 	})
+
+	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: c.Param("projectId")})
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -302,6 +307,8 @@ func (t *TaskController) Delete(c *gin.Context) {
 		Action:         models.ActionDeletedTask,
 		Details:        "Deleted the task",
 	})
+
+	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: c.Param("projectId")})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Task deleted"})
 }

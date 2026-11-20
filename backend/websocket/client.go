@@ -19,6 +19,7 @@ type Client struct {
 	Conn   *websocket.Conn
 	Send   chan []byte
 	OrgID  string // Used to broadcast only to the same company
+	UserID string // Used to target one user (e.g. force logout)
 }
 
 func (c *Client) ReadPump() {
@@ -29,7 +30,7 @@ func (c *Client) ReadPump() {
 	c.Conn.SetReadLimit(maxMessageSize)
 	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
-	
+
 	for {
 		_, _, err := c.Conn.ReadMessage()
 		if err != nil {

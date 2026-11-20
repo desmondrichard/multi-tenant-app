@@ -89,14 +89,7 @@ func Setup(r *gin.Engine) {
 		protected.Use(middleware.AuthRequired())
 		{
 			// Auth Check
-			protected.GET("/me", func(c *gin.Context) {
-				c.JSON(200, gin.H{
-					"userId":  c.GetString("userId"),
-					"orgId":   c.GetString("orgId"),
-					"orgName": c.GetString("orgName"),
-					"role":    c.GetString("role"),
-				})
-			})
+			protected.GET("/me", authCtrl.Me)
 
 			// Users
 			protected.GET("/users", userCtrl.ListMembers)

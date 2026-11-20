@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/yourname/multi-tenant-pm/middleware"
 	"github.com/yourname/multi-tenant-pm/utils"
 	ws "github.com/yourname/multi-tenant-pm/websocket"
 )
@@ -30,16 +31,23 @@ func HandleWS(c *gin.Context) {
 		return
 	}
 
+	// The user must still belong to the workspace (not removed)
+	if _, _, err := middleware.VerifyMembership(c.Request.Context(), claims); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Access revoked"})
+		return
+	}
+
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
 
 	client := &ws.Client{
-		Hub:   ws.GlobalHub,
-		Conn:  conn,
-		Send:  make(chan []byte, 256),
-		OrgID: claims.OrganizationID,
+		Hub:    ws.GlobalHub,
+		Conn:   conn,
+		Send:   make(chan []byte, 256),
+		OrgID:  claims.OrganizationID,
+		UserID: claims.UserID,
 	}
 
 	client.Hub.Register <- client

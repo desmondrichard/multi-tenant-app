@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/yourname/multi-tenant-pm/services"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var validate = validator.New()
@@ -52,4 +53,27 @@ func (c *AuthController) Login(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+
+// Me returns the logged-in user's profile. The frontend keeps ONLY the token
+// in localStorage and calls this endpoint to get name, email, role, workspaces.
+// (AuthRequired already verified the user + workspace in the database.)
+func (c *AuthController) Me(ctx *gin.Context) {
+	userID, _ := primitive.ObjectIDFromHex(ctx.GetString("userId"))
+
+	user, err := c.Svc.Users.FindByID(ctx.Request.Context(), userID)
+	if err != nil || user == nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "User not found", "code": "ACCESS_REVOKED"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"id":             user.ID,
+		"name":           user.Name,
+		"email":          user.Email,
+		"role":           ctx.GetString("role"),
+		"organizationId": ctx.GetString("orgId"),
+		"orgName":        ctx.GetString("orgName"),
+		"memberships":    user.Memberships,
+	})
 }

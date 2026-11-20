@@ -9,6 +9,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/yourname/multi-tenant-pm/config"
 	"github.com/yourname/multi-tenant-pm/routes"
+	ws "github.com/yourname/multi-tenant-pm/websocket"
 )
 
 func main() {
@@ -16,6 +17,10 @@ func main() {
 
 	config.ConnectMongo()
 	config.ConnectRedis()
+
+	// Real-time: start the WebSocket hub and the Redis pub/sub listener
+	go ws.GlobalHub.Run()
+	ws.StartSubscriber()
 
 	r := gin.Default()
 
