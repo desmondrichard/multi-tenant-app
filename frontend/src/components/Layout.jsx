@@ -132,9 +132,9 @@ export default function Layout() {
   ];
 
   return (
-    <div className="min-h-screen flex bg-slate-50">
+    <div className="h-screen overflow-hidden flex bg-slate-50">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col">
+      <aside className="w-64 shrink-0 h-full bg-white border-r border-slate-200 flex flex-col">
         <div className="h-16 flex items-center gap-2 px-6 border-b border-slate-200">
           <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center shadow-sm">
             <Layers className="w-5 h-5 text-white" />
@@ -142,7 +142,7 @@ export default function Layout() {
           <span className="text-xl font-bold text-slate-900">TaskFlow</span>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 min-h-0 p-4 space-y-1 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -173,9 +173,9 @@ export default function Layout() {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 min-w-0 h-full flex flex-col">
         {/* Topbar */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8">
+        <header className="h-16 shrink-0 bg-white border-b border-slate-200 flex items-center justify-between px-8">
           {/* Workspace Switcher */}
           <div className="relative">
             <button
@@ -304,7 +304,7 @@ export default function Layout() {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 p-8 overflow-y-auto">
+        <main className="flex-1 min-h-0 min-w-0 p-8 overflow-y-auto overflow-x-hidden">
           <Outlet />
         </main>
       </div>

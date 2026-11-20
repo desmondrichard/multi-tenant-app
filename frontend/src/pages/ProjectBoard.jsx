@@ -156,7 +156,8 @@ export default function ProjectBoard() {
 
   // Soft delete a task (hidden, but kept in the database)
   const deleteTaskMutation = useMutation({
-    mutationFn: (taskId) => api.delete(`/projects/${projectId}/tasks/${taskId}`),
+    mutationFn: (taskId) =>
+      api.delete(`/projects/${projectId}/tasks/${taskId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["analytics"] });
@@ -217,7 +218,7 @@ export default function ProjectBoard() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
         <div className="flex items-center gap-4">
           <Link
             to="/projects"
@@ -228,7 +229,7 @@ export default function ProjectBoard() {
           <h1 className="text-2xl font-bold text-slate-900">Project Board</h1>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             onClick={handleDeleteProject}
             disabled={deleteProjectMutation.isPending}
@@ -315,14 +316,14 @@ export default function ProjectBoard() {
       </div>
 
       {/* Kanban Columns */}
-      <div className="flex-1 flex gap-6 overflow-x-auto pb-4">
+      <div className="flex-1 min-h-96 flex gap-6 overflow-x-auto overflow-y-hidden pb-4">
         {COLUMNS.map((col) => {
           const columnTasks = tasks.filter((t) => t.status === col.id);
 
           return (
             <div
               key={col.id}
-              className="w-80 shrink-0 flex flex-col bg-slate-100 rounded-xl p-4"
+              className="w-80 shrink-0 min-h-0 flex flex-col bg-slate-100 rounded-xl p-4"
             >
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold text-slate-700">
@@ -334,7 +335,7 @@ export default function ProjectBoard() {
                 <MoreHorizontal className="w-5 h-5 text-slate-400" />
               </div>
 
-              <div className="flex-1 space-y-3 overflow-y-auto">
+              <div className="flex-1 min-h-0 space-y-3 overflow-y-auto">
                 {columnTasks.map((task) => {
                   const isOverdue =
                     task.dueDate &&
@@ -355,7 +356,9 @@ export default function ProjectBoard() {
                           title="Delete task"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm(`Delete task "${task.title}"?`)) {
+                            if (
+                              window.confirm(`Delete task "${task.title}"?`)
+                            ) {
                               deleteTaskMutation.mutate(task.id);
                             }
                           }}
