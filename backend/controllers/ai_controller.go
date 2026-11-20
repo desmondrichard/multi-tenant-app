@@ -408,7 +408,8 @@ func aiErrorMessage(err error) (int, string) {
 		return http.StatusBadGateway, "Google rejected the AI key. Check GEMINI_API_KEY on the server."
 	case strings.Contains(e, "429") || strings.Contains(e, "resource_exhausted") || strings.Contains(e, "quota"):
 		return http.StatusTooManyRequests, "AI usage limit reached. Please wait a minute and try again."
-	case strings.Contains(e, "503") || strings.Contains(e, "unavailable") || strings.Contains(e, "overloaded"):
+	case strings.Contains(e, "503") || strings.Contains(e, "unavailable") || strings.Contains(e, "overloaded") ||
+		strings.Contains(e, "deadline exceeded") || strings.Contains(e, "timeout"):
 		return http.StatusServiceUnavailable, "Gemini is overloaded right now. Please try again in a moment."
 	}
 	return http.StatusBadGateway, "The AI request failed. Please try again."
@@ -433,15 +434,35 @@ func callGemini(prompt string, cfg *genai.GenerateContentConfig) (string, error)
 	}
 
 	var lastErr error
+	started := time.Now()
 
 	for _, modelName := range geminiModels() {
+		// Never keep the user waiting more than ~35 seconds in total
+		if time.Since(started) > 35*time.Second {
+			break
+		}
+
+		// Gemini 2.5 Flash "thinks" before answering, which adds seconds.
+		// Our task is simple, so turn thinking off to answer much faster.
+		callCfg := &genai.GenerateContentConfig{}
+		if cfg != nil {
+			copied := *cfg
+			callCfg = &copied
+		}
+		if strings.Contains(modelName, "2.5-flash") {
+			callCfg.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)}
+		}
+
 		for attempt := 1; attempt <= 2; attempt++ {
 			fmt.Printf("🔄 Trying model: %s (attempt %d)\n", modelName, attempt)
 
-			resp, err := client.Models.GenerateContent(ctx, modelName,
+			// Each single call may take at most 15 seconds
+			callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			resp, err := client.Models.GenerateContent(callCtx, modelName,
 				[]*genai.Content{
 					{Parts: []*genai.Part{{Text: prompt}}},
-				}, cfg)
+				}, callCfg)
+			cancel()
 
 			if err == nil && resp != nil && len(resp.Candidates) > 0 &&
 				resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
@@ -457,7 +478,7 @@ func callGemini(prompt string, cfg *genai.GenerateContentConfig) (string, error)
 			fmt.Printf("⚠️ Model %s failed: %v\n", modelName, err)
 
 			// Temporary overload / rate limit: wait a little and try the same model once more
-			if attempt == 1 && isRetryableAIError(err) {
+			if attempt == 1 && isRetryableAIError(err) && time.Since(started) < 25*time.Second {
 				time.Sleep(2 * time.Second)
 				continue
 			}

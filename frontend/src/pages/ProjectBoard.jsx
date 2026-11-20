@@ -196,7 +196,7 @@ export default function ProjectBoard() {
   // AI Mutation
   const aiMutation = useMutation({
     mutationFn: (prompt) =>
-      api.post("/ai/generate-task", { prompt, projectId }),
+      api.post("/ai/generate-task", { prompt, projectId }, { timeout: 60000 }),
     onSuccess: (res) => {
       const created = res.data;
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
@@ -212,7 +212,11 @@ export default function ProjectBoard() {
       setSelectedTask(created); // open it so you can review everything
     },
     onError: (err) =>
-      toast.error(err.response?.data?.error || "AI failed to generate task"),
+      toast.error(
+        err.code === "ECONNABORTED"
+          ? "The AI took too long to respond. Please try again."
+          : err.response?.data?.error || "AI failed to generate task",
+      ),
   });
 
   const handleSubmit = (e) => {
@@ -666,7 +670,9 @@ export default function ProjectBoard() {
                   disabled={aiMutation.isPending || !aiPrompt.trim()}
                   className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
                 >
-                  {aiMutation.isPending ? "Analyzing prompt..." : "Create Task"}
+                  {aiMutation.isPending
+                    ? "Analyzing prompt (5-15 sec)..."
+                    : "Create Task"}
                 </button>
               </div>
             </form>
