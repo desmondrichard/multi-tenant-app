@@ -197,11 +197,19 @@ export default function ProjectBoard() {
   const aiMutation = useMutation({
     mutationFn: (prompt) =>
       api.post("/ai/generate-task", { prompt, projectId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
-      toast.success("AI successfully created the task!");
+    onSuccess: (res) => {
+      const created = res.data;
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["activity-feed"] });
+
+      const count = created.subtasks?.length || 0;
+      toast.success(
+        `AI created "${created.title}" with ${count} subtask${count === 1 ? "" : "s"}`,
+      );
       setIsAIModalOpen(false);
       setAiPrompt("");
+      setSelectedTask(created); // open it so you can review everything
     },
     onError: (err) =>
       toast.error(err.response?.data?.error || "AI failed to generate task"),
@@ -617,8 +625,9 @@ export default function ProjectBoard() {
               <Sparkles className="w-5 h-5 text-purple-600" /> AI Task Creator
             </h2>
             <p className="text-sm text-slate-500 mb-4">
-              Describe what needs to be done. AI will create the task, set the
-              priority, and assign it based on your prompt.
+              Describe what needs to be done. AI will create the task with its
+              description, priority, status, assignee, due date and subtasks,
+              just like filling the form by hand.
             </p>
 
             <form
@@ -634,10 +643,15 @@ export default function ProjectBoard() {
                 required
                 value={aiPrompt}
                 onChange={(e) => setAiPrompt(e.target.value)}
-                placeholder='e.g. "Create a high priority login bug fix task and assign it to Richard"'
+                placeholder='e.g. "Urgent: fix the login bug, assign it to Richard, due next Friday. Needs reproducing, fixing and testing."'
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 mb-4"
-                rows={3}
+                rows={4}
               />
+              <p className="text-xs text-slate-400 -mt-2 mb-4">
+                Tip: mention a name to assign it, a date like
+                &quot;tomorrow&quot; or &quot;next Friday&quot;, a priority, or
+                list your own steps for subtasks.
+              </p>
 
               <div className="flex justify-end gap-3">
                 <button

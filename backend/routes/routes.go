@@ -66,9 +66,11 @@ func Setup(r *gin.Engine) {
 
 	// AI
 	aiCtrl := &controllers.AIController{
-		TaskRepo:    taskRepo,
-		UserRepo:    userRepo,
-		ProjectRepo: projectRepo,
+		TaskRepo:         taskRepo,
+		UserRepo:         userRepo,
+		ProjectRepo:      projectRepo,
+		ActivityRepo:     activityRepo,
+		NotificationRepo: notificationRepo,
 	}
 
 	// Workspace (NEW)
@@ -168,7 +170,7 @@ func Setup(r *gin.Engine) {
 			protected.DELETE("/team/:userId", middleware.RequireRole("owner", "admin"), teamCtrl.RemoveUser)
 
 			// AI
-			protected.POST("/ai/generate-task", aiCtrl.GenerateTask)
+			protected.POST("/ai/generate-task", middleware.RequireRole("owner", "admin", "manager", "member"), aiCtrl.GenerateTask)
 			protected.POST("/ai/ask", aiCtrl.AskAI)
 		}
 	}
