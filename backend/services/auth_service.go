@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	"github.com/yourname/multi-tenant-pm/utils"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -32,12 +33,25 @@ type LoginInput struct {
 }
 
 func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *models.User, error) {
-	existing, err := s.Users.FindByEmail(ctx, strings.ToLower(in.Email))
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+
+	existing, err := s.Users.FindByEmail(ctx, email)
 	if err != nil {
 		return "", nil, err
 	}
+
+	// A person can belong to MANY organizations (e.g. a member of one) and
+	// create their own. If the email already has an account, they must prove
+	// it is theirs with the account's password, and they can own only ONE org.
 	if existing != nil {
-		return "", nil, errors.New("email already registered")
+		if !utils.CheckPassword(existing.PasswordHash, in.Password) {
+			return "", nil, errors.New("an account with this email already exists - enter that account's existing password to create your own organization with it")
+		}
+		for _, m := range existing.Memberships {
+			if m.Role == models.RoleOwner {
+				return "", nil, errors.New("you already own an organization - a user can own only one organization")
+			}
+		}
 	}
 
 	// 1) Create org
@@ -56,30 +70,47 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (string, *
 	}
 	org.ID = res.InsertedID.(primitive.ObjectID)
 
-	// 2) Hash pw
+	ownerMembership := models.Membership{
+		OrganizationID:   org.ID,
+		OrganizationName: org.Name,
+		Role:             models.RoleOwner,
+	}
+
+	// 2a) Existing user: add the new organization as an extra membership
+	if existing != nil {
+		added, err := s.Users.AddOwnerMembership(ctx, existing.ID, ownerMembership)
+		if err != nil || !added {
+			// roll back the organization we just created
+			config.Database.Collection("organizations").DeleteOne(ctx, bson.M{"_id": org.ID})
+			if err != nil {
+				return "", nil, err
+			}
+			return "", nil, errors.New("you already own an organization - a user can own only one organization")
+		}
+		existing.Memberships = append(existing.Memberships, ownerMembership)
+
+		token, err := utils.GenerateToken(existing.ID.Hex(), org.ID.Hex(), org.Name, models.RoleOwner)
+		return token, existing, err
+	}
+
+	// 2b) New user: hash pw and create the owner
 	hash, err := utils.HashPassword(in.Password)
 	if err != nil {
 		return "", nil, err
 	}
 
-	// 3) Create owner user with Membership array
 	user := &models.User{
 		Name:         in.Name,
-		Email:        strings.ToLower(in.Email),
+		Email:        email,
 		PasswordHash: hash,
-		Memberships: []models.Membership{
-			{
-				OrganizationID:   org.ID,
-				OrganizationName: org.Name,
-				Role:             models.RoleOwner,
-			},
-		},
+		Memberships:  []models.Membership{ownerMembership},
 	}
 	if err := s.Users.Create(ctx, user); err != nil {
+		config.Database.Collection("organizations").DeleteOne(ctx, bson.M{"_id": org.ID})
 		return "", nil, err
 	}
 
-	// 4) Generate Token with the first membership
+	// 3) Generate Token for the new workspace
 	token, err := utils.GenerateToken(user.ID.Hex(), org.ID.Hex(), org.Name, models.RoleOwner)
 	return token, user, err
 }

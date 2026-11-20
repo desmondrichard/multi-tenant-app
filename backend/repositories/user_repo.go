@@ -102,3 +102,19 @@ func (r *UserRepo) FindByIDs(ctx context.Context, ids []primitive.ObjectID) ([]m
 	}
 	return users, nil
 }
+
+// AddOwnerMembership adds an "owner" membership ONLY if the user does not
+// already own another organization (one owner role per user).
+// It is a single atomic update, so two parallel requests can't create two.
+// Returns false if the user already owns an organization.
+func (r *UserRepo) AddOwnerMembership(ctx context.Context, userID primitive.ObjectID, m models.Membership) (bool, error) {
+	filter := bson.M{
+		"_id":         userID,
+		"memberships": bson.M{"$not": bson.M{"$elemMatch": bson.M{"role": models.RoleOwner}}},
+	}
+	res, err := r.coll().UpdateOne(ctx, filter, bson.M{"$push": bson.M{"memberships": m}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}

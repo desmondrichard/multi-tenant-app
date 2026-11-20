@@ -11,6 +11,7 @@ export default function Team() {
 
   // Current user's role in this workspace (loaded from GET /me)
   const currentRole = user?.role || "member";
+  const canManage = currentRole === "owner" || currentRole === "admin";
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [inviteData, setInviteData] = useState({ email: "", role: "member" });
@@ -112,45 +113,60 @@ export default function Team() {
                 </td>
                 <td className="p-4 text-slate-600">{member.email}</td>
                 <td className="p-4">
-                  <select
-                    value={member.role || "member"}
-                    onChange={(e) =>
-                      updateRoleMutation.mutate({
-                        userId: member.id,
-                        role: e.target.value,
-                      })
-                    }
-                    disabled={member.role === "owner" || member.id === user?.id}
-                    className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50 disabled:cursor-not-allowed ${
-                      member.role === "owner"
-                        ? "bg-amber-100 text-amber-800"
-                        : member.role === "admin"
+                  {canManage &&
+                  member.role !== "owner" &&
+                  member.id !== user?.id ? (
+                    <select
+                      value={member.role || "member"}
+                      onChange={(e) =>
+                        updateRoleMutation.mutate({
+                          userId: member.id,
+                          role: e.target.value,
+                        })
+                      }
+                      className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500 ${
+                        member.role === "admin"
                           ? "bg-purple-100 text-purple-800"
                           : "bg-slate-100 text-slate-800 hover:border-slate-300"
-                    }`}
-                  >
-                    <option value="owner">Owner</option>
-                    <option value="admin">Admin</option>
-                    <option value="member">Member</option>
-                  </select>
+                      }`}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="member">Member</option>
+                    </select>
+                  ) : (
+                    // Owner (or yourself / no permission): plain badge, no dropdown
+                    <span
+                      className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize ${
+                        member.role === "owner"
+                          ? "bg-amber-100 text-amber-800"
+                          : member.role === "admin"
+                            ? "bg-purple-100 text-purple-800"
+                            : "bg-slate-100 text-slate-800"
+                      }`}
+                    >
+                      {member.role || "member"}
+                    </span>
+                  )}
                 </td>
                 <td className="p-4 text-right">
-                  {member.role !== "owner" && member.id !== user?.id && (
-                    <button
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Are you sure you want to remove ${member.name}?`,
-                          )
-                        ) {
-                          removeUserMutation.mutate(member.id);
-                        }
-                      }}
-                      className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
-                    >
-                      Remove
-                    </button>
-                  )}
+                  {canManage &&
+                    member.role !== "owner" &&
+                    member.id !== user?.id && (
+                      <button
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Are you sure you want to remove ${member.name}?`,
+                            )
+                          ) {
+                            removeUserMutation.mutate(member.id);
+                          }
+                        }}
+                        className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                      >
+                        Remove
+                      </button>
+                    )}
                 </td>
               </tr>
             ))}

@@ -258,6 +258,28 @@ func (t *TeamController) UpdateRole(c *gin.Context) {
 		return
 	}
 
+	in.Role = strings.ToLower(strings.TrimSpace(in.Role))
+
+	// There is exactly ONE owner per organization: the person who created it.
+	if in.Role == models.RoleOwner {
+		c.JSON(http.StatusForbidden, gin.H{"error": "An organization can have only one owner"})
+		return
+	}
+	if in.Role != models.RoleAdmin && in.Role != models.RoleMember {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Role must be admin or member"})
+		return
+	}
+
+	// The owner's role can never be changed
+	if target, _ := t.UserRepo.FindByID(c.Request.Context(), userID); target != nil {
+		for _, m := range target.Memberships {
+			if m.OrganizationID == orgID && m.Role == models.RoleOwner {
+				c.JSON(http.StatusForbidden, gin.H{"error": "The owner's role cannot be changed"})
+				return
+			}
+		}
+	}
+
 	if err := t.UserRepo.UpdateRoleInMemberships(c.Request.Context(), orgID, userID, in.Role); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

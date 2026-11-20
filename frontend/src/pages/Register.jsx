@@ -62,7 +62,7 @@ export default function Register() {
       <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-sm border border-slate-200">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-slate-900">
-            Create an Organization
+            Create an account
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Start managing your projects today
@@ -146,6 +146,11 @@ export default function Register() {
                 {errors.password.message}
               </p>
             )}
+            <p className="text-xs text-slate-500 mt-1">
+              Already have an account (for example as a member of another
+              workspace)? Enter your existing password to create your own
+              organization with it.
+            </p>
           </div>
 
           <button
