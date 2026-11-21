@@ -29,27 +29,40 @@ func (r *NotificationRepo) Create(ctx context.Context, n *models.Notification) e
 }
 
 // ListByUser gets the latest 20 notifications for a specific user
-func (r *NotificationRepo) ListByUser(ctx context.Context, orgID, userID primitive.ObjectID) ([]models.Notification, error) {
+// ListByUser returns the newest `limit` notifications plus the total and unread counts
+func (r *NotificationRepo) ListByUser(ctx context.Context, orgID, userID primitive.ObjectID, limit int64) ([]models.Notification, int64, int64, error) {
 	filter := bson.M{
 		"organizationId": orgID,
 		"userId":         userID,
 	}
-	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(20)
 
+	total, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	unread, err := r.coll().CountDocuments(ctx, bson.M{
+		"organizationId": orgID,
+		"userId":         userID,
+		"isRead":         false,
+	})
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(limit)
 	cursor, err := r.coll().Find(ctx, filter, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer cursor.Close(ctx)
 
 	var notifications []models.Notification
 	if err := cursor.All(ctx, &notifications); err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
-	return notifications, nil
+	return notifications, total, unread, nil
 }
 
-// MarkAsRead updates a notification to read status
 func (r *NotificationRepo) MarkAsRead(ctx context.Context, orgID, userID, notifID primitive.ObjectID) error {
 	filter := bson.M{
 		"_id":            notifID,

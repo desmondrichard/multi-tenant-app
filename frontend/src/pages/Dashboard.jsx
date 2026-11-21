@@ -54,8 +54,8 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-full -m-8 p-8 bg-dashboard-gradient relative overflow-hidden">
-      <div className="flex justify-between items-start mb-8 relative z-10">
+    <div className="min-h-full -m-4 p-4 md:-m-8 md:p-8 bg-dashboard-gradient relative overflow-hidden">
+      <div className="flex flex-wrap justify-between items-start gap-4 mb-8 relative z-10">
         <div>
           <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-2">
             Good morning, {user?.name}! <span className="text-3xl">👋</span>
@@ -117,7 +117,7 @@ export default function Dashboard() {
           </div>
 
           <div className="flex flex-col md:flex-row items-center justify-center gap-10">
-            <div className="relative w-64 h-64">
+            <div className="relative w-56 h-56 sm:w-64 sm:h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -231,10 +231,7 @@ export default function Dashboard() {
                 );
                 return (
                   <div key={activity.id} className="relative pl-6">
-                    <ActivityIcon
-                      type={type}
-                      className="absolute -left-3 top-1"
-                    />
+                    <ActivityIcon type={type} className="absolute -left-3 top-1" />
                     {link ? (
                       <Link to={link} className="block hover:opacity-80">
                         {content}

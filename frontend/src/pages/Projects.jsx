@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom"; // <-- Added this import
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import { Plus, FolderKanban, Trash2 } from "lucide-react";
+import Pagination from "../components/Pagination";
+
+const PAGE_SIZE = 9;
 
 export default function Projects() {
   const queryClient = useQueryClient();
@@ -14,14 +17,25 @@ export default function Projects() {
     description: "",
   });
 
-  // 1. Fetch Projects
-  const { data: projects, isLoading } = useQuery({
-    queryKey: ["projects"],
+  const [page, setPage] = useState(1);
+
+  // 1. Fetch one page of projects
+  const { data, isLoading } = useQuery({
+    queryKey: ["projects", "page", page],
     queryFn: async () => {
-      const res = await api.get("/projects");
+      const res = await api.get(`/projects?page=${page}&limit=${PAGE_SIZE}`);
       return res.data;
     },
+    placeholderData: (previous) => previous,
   });
+  const projects = data?.projects;
+
+  // If the last project of a page was deleted, go back one page
+  useEffect(() => {
+    if (data && data.projects.length === 0 && page > 1) {
+      setPage((p) => p - 1);
+    }
+  }, [data, page]);
 
   // 2. Create Project Mutation
   const createMutation = useMutation({
@@ -61,7 +75,7 @@ export default function Projects() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Projects</h1>
         <button
           onClick={() => setIsModalOpen(true)}
@@ -127,6 +141,14 @@ export default function Projects() {
           ))}
         </div>
       )}
+
+      <Pagination
+        page={page}
+        limit={PAGE_SIZE}
+        totalCount={data?.totalCount || 0}
+        onPageChange={setPage}
+        label="projects"
+      />
 
       {/* Create Project Modal */}
       {isModalOpen && (

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,12 +12,14 @@ import (
 	"github.com/yourname/multi-tenant-pm/models"
 	"github.com/yourname/multi-tenant-pm/repositories"
 	ws "github.com/yourname/multi-tenant-pm/websocket"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type TaskController struct {
 	Repo             *repositories.TaskRepo
+	UserRepo         *repositories.UserRepo
 	ActivityRepo     *repositories.ActivityRepo
 	NotificationRepo *repositories.NotificationRepo
 }
@@ -198,7 +201,19 @@ func (t *TaskController) ListMyTasks(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
 
-	tasks, err := t.Repo.ListByAssignee(c.Request.Context(), orgID, userID)
+	page, _ := strconv.ParseInt(c.DefaultQuery("page", "1"), 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "10"), 10, 64)
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	tasks, total, err := t.Repo.ListByAssignee(c.Request.Context(), orgID, userID, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -207,7 +222,12 @@ func (t *TaskController) ListMyTasks(c *gin.Context) {
 	if tasks == nil {
 		tasks = []models.Task{}
 	}
-	c.JSON(http.StatusOK, tasks)
+	c.JSON(http.StatusOK, gin.H{
+		"tasks":      tasks,
+		"totalCount": total,
+		"page":       page,
+		"limit":      limit,
+	})
 }
 
 // ==========================================
@@ -361,4 +381,194 @@ func (t *TaskController) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, task)
+}
+
+// Update edits a task's title, description, priority, assignee and due date.
+// Every field is optional: only the fields that are sent AND really changed are saved.
+//   - assigneeId "" removes the assignee
+//   - dueDate    "" removes the due date
+func (t *TaskController) Update(c *gin.Context) {
+	ctx := c.Request.Context()
+	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
+	taskID, err := primitive.ObjectIDFromHex(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	var in struct {
+		Title       *string `json:"title"`
+		Description *string `json:"description"`
+		Priority    *string `json:"priority"`
+		AssigneeID  *string `json:"assigneeId"`
+		DueDate     *string `json:"dueDate"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	current, err := t.Repo.FindByID(ctx, orgID, taskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if current == nil || current.ProjectID.Hex() != c.Param("projectId") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	set := bson.M{}
+	unset := bson.M{}
+	changes := []string{}
+	var newAssignee primitive.ObjectID
+	assigneeChanged := false
+
+	// ---- title ----
+	if in.Title != nil {
+		title := strings.TrimSpace(*in.Title)
+		if title == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Title cannot be empty"})
+			return
+		}
+		if len([]rune(title)) > 120 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Title must be 120 characters or less"})
+			return
+		}
+		if title != current.Title {
+			set["title"] = title
+			changes = append(changes, "changed the title")
+		}
+	}
+
+	// ---- description ----
+	if in.Description != nil {
+		desc := strings.TrimSpace(*in.Description)
+		if len([]rune(desc)) > 2000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Description must be 2000 characters or less"})
+			return
+		}
+		if desc != current.Description {
+			set["description"] = desc
+			changes = append(changes, "updated the description")
+		}
+	}
+
+	// ---- priority ----
+	if in.Priority != nil {
+		p := strings.ToLower(strings.TrimSpace(*in.Priority))
+		if p != models.PriorityLow && p != models.PriorityMedium && p != models.PriorityHigh {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Priority must be low, medium or high"})
+			return
+		}
+		if p != current.Priority {
+			set["priority"] = p
+			changes = append(changes, "changed priority to "+p)
+		}
+	}
+
+	// ---- assignee ----
+	if in.AssigneeID != nil {
+		v := strings.TrimSpace(*in.AssigneeID)
+		if v == "" {
+			if !current.AssigneeID.IsZero() {
+				unset["assigneeId"] = ""
+				changes = append(changes, "removed the assignee")
+			}
+		} else {
+			id, err := primitive.ObjectIDFromHex(v)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid assignee"})
+				return
+			}
+			// The assignee must be a member of THIS workspace
+			user, _ := t.UserRepo.FindByID(ctx, id)
+			isMember := false
+			if user != nil {
+				for _, m := range user.Memberships {
+					if m.OrganizationID == orgID {
+						isMember = true
+						break
+					}
+				}
+			}
+			if !isMember {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Assignee must be a member of this workspace"})
+				return
+			}
+			if id != current.AssigneeID {
+				set["assigneeId"] = id
+				changes = append(changes, "assigned the task to "+user.Name)
+				assigneeChanged = true
+				newAssignee = id
+			}
+		}
+	}
+
+	// ---- due date ----
+	if in.DueDate != nil {
+		v := strings.TrimSpace(*in.DueDate)
+		if v == "" {
+			if current.DueDate != nil {
+				unset["dueDate"] = ""
+				changes = append(changes, "removed the due date")
+			}
+		} else {
+			d, err := time.Parse("2006-01-02", v)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Due date must look like 2026-12-31"})
+				return
+			}
+			if current.DueDate == nil || current.DueDate.UTC().Format("2006-01-02") != v {
+				set["dueDate"] = d
+				changes = append(changes, "set the due date to "+v)
+			}
+		}
+	}
+
+	// Nothing really changed: return the task as it is
+	if len(changes) == 0 {
+		c.JSON(http.StatusOK, current)
+		return
+	}
+
+	if err := t.Repo.UpdateFields(ctx, orgID, taskID, set, unset); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	updated, _ := t.Repo.FindByID(ctx, orgID, taskID)
+	if updated == nil {
+		updated = current
+	}
+
+	// Activity log
+	t.ActivityRepo.Create(ctx, &models.Activity{
+		OrganizationID: orgID,
+		TaskID:         taskID,
+		UserID:         userID,
+		Action:         models.ActionUpdatedTask,
+		Details:        strings.Join(changes, ", "),
+	})
+
+	// Tell a newly assigned person
+	if assigneeChanged && newAssignee != userID {
+		pushNotification(ctx, t.NotificationRepo, &models.Notification{
+			OrganizationID: orgID,
+			UserID:         newAssignee,
+			TaskID:         taskID,
+			ProjectID:      updated.ProjectID,
+			Title:          "New Task Assigned",
+			Message:        fmt.Sprintf("You have been assigned to: %s", updated.Title),
+		})
+	}
+
+	ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex(), ProjectID: c.Param("projectId")})
+
+	c.JSON(http.StatusOK, updated)
 }

@@ -4,6 +4,7 @@ import {
   Plus,
   ArrowRightLeft,
   Trash2,
+  Pencil,
 } from "lucide-react";
 
 const STYLES = {
@@ -12,6 +13,7 @@ const STYLES = {
   created: { box: "bg-blue-100 text-blue-600", Icon: Plus },
   status: { box: "bg-amber-100 text-amber-600", Icon: ArrowRightLeft },
   deleted: { box: "bg-red-100 text-red-600", Icon: Trash2 },
+  edited: { box: "bg-indigo-100 text-indigo-600", Icon: Pencil },
 };
 
 export default function ActivityIcon({ type, className = "" }) {

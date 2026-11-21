@@ -1,17 +1,27 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Link } from "react-router-dom";
 import { CheckCircle2, Circle, Clock, LayoutList } from "lucide-react";
+import Pagination from "../components/Pagination";
+
+const PAGE_SIZE = 10;
 
 export default function MyTasks() {
-  const { data: tasks, isLoading } = useQuery({
-    queryKey: ["my-tasks"],
+  const [page, setPage] = useState(1);
+
+  // One page of the tasks assigned to me
+  const { data, isLoading } = useQuery({
+    queryKey: ["my-tasks", page],
     queryFn: async () => {
-      const res = await api.get("/my-tasks");
+      const res = await api.get(`/my-tasks?page=${page}&limit=${PAGE_SIZE}`);
       return res.data;
     },
+    placeholderData: (previous) => previous,
   });
+  const tasks = data?.tasks;
 
+  // All project names (small list) to show the project of each task
   const { data: projects } = useQuery({
     queryKey: ["projects"],
     queryFn: async () => {
@@ -19,6 +29,13 @@ export default function MyTasks() {
       return res.data;
     },
   });
+
+  // If the last task of a page disappeared, go back one page
+  useEffect(() => {
+    if (data && data.tasks.length === 0 && page > 1) {
+      setPage((p) => p - 1);
+    }
+  }, [data, page]);
 
   if (isLoading)
     return <div className="p-8 text-slate-500">Loading your tasks...</div>;
@@ -50,78 +67,88 @@ export default function MyTasks() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
-                <th className="p-4 font-medium">Task</th>
-                <th className="p-4 font-medium">Project</th>
-                <th className="p-4 font-medium">Status</th>
-                <th className="p-4 font-medium">Priority</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tasks?.map((task) => (
-                <tr
-                  key={task.id}
-                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
-                >
-                  <td className="p-4">
-                    <Link
-                      to={`/projects/${task.projectId}`}
-                      className="font-medium text-slate-900 hover:text-brand-600"
-                    >
-                      {task.title}
-                    </Link>
-                    <p className="text-xs text-slate-500 mt-1 line-clamp-1">
-                      {task.description}
-                    </p>
-                  </td>
-                  <td className="p-4 text-sm text-slate-600">
-                    {getProjectName(task.projectId)}
-                  </td>
-                  <td className="p-4">
-                    <span
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium capitalize ${
-                        task.status === "done"
-                          ? "bg-green-100 text-green-700"
-                          : task.status === "under_review"
-                            ? "bg-amber-100 text-amber-700" // <-- Added
-                            : task.status === "in_progress"
-                              ? "bg-blue-100 text-blue-700"
-                              : "bg-slate-100 text-slate-700"
-                      }`}
-                    >
-                      {task.status === "done" ? (
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                      ) : task.status === "in_progress" ? (
-                        <Clock className="w-3.5 h-3.5" />
-                      ) : task.status === "under_review" ? (
-                        <Clock className="w-3.5 h-3.5" /> // <-- Added
-                      ) : (
-                        <Circle className="w-3.5 h-3.5" />
-                      )}
-                      {task.status.replace("_", " ")}
-                    </span>
-                  </td>
-                  <td className="p-4">
-                    <span
-                      className={`text-[10px] font-bold uppercase px-2 py-1 rounded-md ${
-                        task.priority === "high"
-                          ? "bg-red-100 text-red-700"
-                          : task.priority === "medium"
-                            ? "bg-yellow-100 text-yellow-700"
-                            : "bg-slate-100 text-slate-600"
-                      }`}
-                    >
-                      {task.priority}
-                    </span>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[36rem] text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
+                  <th className="p-4 font-medium">Task</th>
+                  <th className="p-4 font-medium">Project</th>
+                  <th className="p-4 font-medium">Status</th>
+                  <th className="p-4 font-medium">Priority</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tasks?.map((task) => (
+                  <tr
+                    key={task.id}
+                    className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
+                  >
+                    <td className="p-4">
+                      {/* ?task= opens the task details right away */}
+                      <Link
+                        to={`/projects/${task.projectId}?task=${task.id}`}
+                        className="font-medium text-slate-900 hover:text-brand-600"
+                      >
+                        {task.title}
+                      </Link>
+                      <p className="text-xs text-slate-500 mt-1 line-clamp-1">
+                        {task.description}
+                      </p>
+                    </td>
+                    <td className="p-4 text-sm text-slate-600">
+                      {getProjectName(task.projectId)}
+                    </td>
+                    <td className="p-4">
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium capitalize ${
+                          task.status === "done"
+                            ? "bg-green-100 text-green-700"
+                            : task.status === "under_review"
+                              ? "bg-amber-100 text-amber-700"
+                              : task.status === "in_progress"
+                                ? "bg-blue-100 text-blue-700"
+                                : "bg-slate-100 text-slate-700"
+                        }`}
+                      >
+                        {task.status === "done" ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : task.status === "in_progress" ||
+                          task.status === "under_review" ? (
+                          <Clock className="w-3.5 h-3.5" />
+                        ) : (
+                          <Circle className="w-3.5 h-3.5" />
+                        )}
+                        {task.status.replace("_", " ")}
+                      </span>
+                    </td>
+                    <td className="p-4">
+                      <span
+                        className={`text-[10px] font-bold uppercase px-2 py-1 rounded-md ${
+                          task.priority === "high"
+                            ? "bg-red-100 text-red-700"
+                            : task.priority === "medium"
+                              ? "bg-yellow-100 text-yellow-700"
+                              : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {task.priority}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
+
+      <Pagination
+        page={page}
+        limit={PAGE_SIZE}
+        totalCount={data?.totalCount || 0}
+        onPageChange={setPage}
+        label="tasks"
+      />
     </div>
   );
 }

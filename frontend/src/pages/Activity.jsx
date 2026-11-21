@@ -15,6 +15,7 @@ const FILTERS = [
   { id: "all", label: "All" },
   { id: "created_task", label: "Created" },
   { id: "changed_status", label: "Status changes" },
+  { id: "updated_task", label: "Edits" },
   { id: "added_comment", label: "Comments" },
   { id: "deleted_task", label: "Deleted" },
 ];
@@ -143,12 +144,11 @@ export default function Activity() {
                   <ActivityIcon type={type} className="mt-0.5 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-slate-800">{text}</p>
-                    {activity.taskDeleted &&
-                      activity.action !== "deleted_task" && (
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          This task has since been deleted
-                        </p>
-                      )}
+                    {activity.taskDeleted && activity.action !== "deleted_task" && (
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        This task has since been deleted
+                      </p>
+                    )}
                   </div>
                   <span
                     className="text-xs text-slate-400 shrink-0"

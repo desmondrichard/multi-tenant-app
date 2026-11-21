@@ -68,7 +68,7 @@ export default function Team() {
 
   return (
     <div className="max-w-5xl mx-auto">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Team Members</h1>
           <p className="text-slate-500 mt-1">
@@ -88,7 +88,8 @@ export default function Team() {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <table className="w-full text-left border-collapse">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[34rem] text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
               <th className="p-4 font-medium">Name</th>
@@ -149,29 +150,28 @@ export default function Team() {
                   )}
                 </td>
                 <td className="p-4 text-right">
-                  {canManage &&
-                    member.role !== "owner" &&
-                    member.id !== user?.id && (
-                      <button
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Are you sure you want to remove ${member.name}?`,
-                            )
-                          ) {
-                            removeUserMutation.mutate(member.id);
-                          }
-                        }}
-                        className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
-                      >
-                        Remove
-                      </button>
-                    )}
+                  {canManage && member.role !== "owner" && member.id !== user?.id && (
+                    <button
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Are you sure you want to remove ${member.name}?`,
+                          )
+                        ) {
+                          removeUserMutation.mutate(member.id);
+                        }
+                      }}
+                      className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                    >
+                      Remove
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Invite Modal */}

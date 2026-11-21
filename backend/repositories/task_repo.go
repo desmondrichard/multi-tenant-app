@@ -105,24 +105,34 @@ func (r *TaskRepo) FindByID(ctx context.Context, orgID, taskID primitive.ObjectI
 	return &task, nil
 }
 
-func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.ObjectID) ([]models.Task, error) {
+// ListByAssignee returns one page of the tasks assigned to a user, plus the total count
+func (r *TaskRepo) ListByAssignee(ctx context.Context, orgID, userID primitive.ObjectID, page, limit int64) ([]models.Task, int64, error) {
 	filter := bson.M{
 		"organizationId": orgID,
 		"assigneeId":     userID,
 		"deletedAt":      nil,
 	}
-	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}})
+
+	total, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetSkip((page - 1) * limit).
+		SetLimit(limit)
 	cursor, err := r.coll().Find(ctx, filter, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer cursor.Close(ctx)
 
 	var tasks []models.Task
 	if err := cursor.All(ctx, &tasks); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return tasks, nil
+	return tasks, total, nil
 }
 
 func (r *TaskRepo) AddSubtask(ctx context.Context, orgID, taskID primitive.ObjectID, subtask models.Subtask) error {
@@ -286,4 +296,31 @@ func (r *TaskRepo) UnassignUser(ctx context.Context, orgID, userID primitive.Obj
 		return 0, err
 	}
 	return res.ModifiedCount, nil
+}
+
+// UpdateFields applies $set / $unset changes to a live (not deleted) task.
+// Returns mongo.ErrNoDocuments if the task doesn't exist or is deleted.
+func (r *TaskRepo) UpdateFields(ctx context.Context, orgID, taskID primitive.ObjectID, set, unset bson.M) error {
+	update := bson.M{}
+	if len(set) > 0 {
+		update["$set"] = set
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	if len(update) == 0 {
+		return nil
+	}
+
+	res, err := r.coll().UpdateOne(ctx,
+		bson.M{"_id": taskID, "organizationId": orgID, "deletedAt": nil},
+		update,
+	)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }

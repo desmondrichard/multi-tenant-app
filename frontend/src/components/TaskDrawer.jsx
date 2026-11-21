@@ -2,11 +2,29 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { X, Send, User, Clock, Trash2 } from "lucide-react";
+import { X, Send, User, Clock, Trash2, Pencil } from "lucide-react";
 import SubtaskItem from "./SubtaskItem";
 
-export default function TaskDrawer({ task, projectId, members, onClose }) {
+const ZERO_ID = "000000000000000000000000"; // how the API shows "no assignee"
+
+export default function TaskDrawer({
+  task: initialTask,
+  projectId,
+  members,
+  onClose,
+}) {
   const queryClient = useQueryClient();
+
+  // The drawer keeps its own copy of the task so edits show up instantly
+  const [task, setTask] = useState(initialTask);
+  const [isEditing, setIsEditing] = useState(false);
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    priority: "medium",
+    assigneeId: "",
+    dueDate: "",
+  });
   const [content, setContent] = useState("");
   const [newSubtask, setNewSubtask] = useState("");
   const [activeTab, setActiveTab] = useState("details"); // details | comments | activity
@@ -112,6 +130,52 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
       toast.error(err.response?.data?.error || "Failed to delete task"),
   });
 
+  // Edit title, description, priority, assignee and due date
+  const updateTaskMutation = useMutation({
+    mutationFn: (payload) =>
+      api.patch(`/projects/${projectId}/tasks/${task.id}`, payload),
+    onSuccess: (res) => {
+      setTask(res.data);
+      setIsEditing(false);
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["my-tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["activities", task.id] });
+      queryClient.invalidateQueries({ queryKey: ["activity-feed"] });
+      toast.success("Task updated!");
+    },
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to update task"),
+  });
+
+  const startEditing = () => {
+    setForm({
+      title: task.title || "",
+      description: task.description || "",
+      priority: task.priority || "medium",
+      assigneeId:
+        task.assigneeId && task.assigneeId !== ZERO_ID ? task.assigneeId : "",
+      dueDate: task.dueDate ? task.dueDate.slice(0, 10) : "",
+    });
+    setActiveTab("details");
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = (e) => {
+    e.preventDefault();
+    if (!form.title.trim()) {
+      toast.error("Title cannot be empty");
+      return;
+    }
+    updateTaskMutation.mutate({
+      title: form.title.trim(),
+      description: form.description,
+      priority: form.priority,
+      assigneeId: form.assigneeId, // "" = unassigned
+      dueDate: form.dueDate, // "" = no due date
+    });
+  };
+
   const handleDelete = () => {
     if (window.confirm(`Delete task "${task.title}"?`)) {
       deleteTaskMutation.mutate();
@@ -140,10 +204,12 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
     <div className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-sm transition-opacity">
       <div className="w-full max-w-lg bg-white h-full shadow-2xl flex flex-col animate-slide-in">
         {/* Header */}
-        <div className="p-6 border-b border-slate-200 flex justify-between items-start">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900">{task.title}</h2>
-            <div className="flex items-center gap-4 mt-3 text-sm text-slate-500">
+        <div className="p-4 sm:p-6 border-b border-slate-200 flex justify-between items-start gap-2">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-slate-900 break-words">
+              {task.title}
+            </h2>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3 text-sm text-slate-500">
               <span className="flex items-center gap-1">
                 <User className="w-4 h-4" />
                 {assignee ? assignee.name : "Unassigned"}
@@ -169,7 +235,14 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={startEditing}
+              title="Edit task"
+              className="p-2 hover:bg-brand-50 rounded-full transition-colors"
+            >
+              <Pencil className="w-5 h-5 text-brand-600" />
+            </button>
             <button
               onClick={handleDelete}
               disabled={deleteTaskMutation.isPending}
@@ -188,7 +261,7 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-200 px-6">
+        <div className="flex border-b border-slate-200 px-2 sm:px-6 overflow-x-auto">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -210,19 +283,139 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-8">
           {/* ---------- DETAILS TAB ---------- */}
           {activeTab === "details" && (
             <>
-              {/* Description */}
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 mb-2">
-                  Description
-                </h3>
-                <p className="text-sm text-slate-700 bg-slate-50 p-4 rounded-lg">
-                  {task.description || "No description provided."}
-                </p>
-              </div>
+              {isEditing ? (
+                <form
+                  onSubmit={handleSaveEdit}
+                  className="space-y-4 bg-slate-50 border border-slate-200 rounded-xl p-4"
+                >
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Title <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={form.title}
+                      maxLength={120}
+                      onChange={(e) =>
+                        setForm({ ...form, title: e.target.value })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Description
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={form.description}
+                      maxLength={2000}
+                      onChange={(e) =>
+                        setForm({ ...form, description: e.target.value })
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500 resize-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Priority
+                      </label>
+                      <select
+                        value={form.priority}
+                        onChange={(e) =>
+                          setForm({ ...form, priority: e.target.value })
+                        }
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Assignee
+                      </label>
+                      <select
+                        value={form.assigneeId}
+                        onChange={(e) =>
+                          setForm({ ...form, assigneeId: e.target.value })
+                        }
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
+                      >
+                        <option value="">Unassigned</option>
+                        {members?.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Due date
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="date"
+                        value={form.dueDate}
+                        onChange={(e) =>
+                          setForm({ ...form, dueDate: e.target.value })
+                        }
+                        className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-brand-500"
+                      />
+                      {form.dueDate && (
+                        <button
+                          type="button"
+                          onClick={() => setForm({ ...form, dueDate: "" })}
+                          className="px-3 text-xs font-medium text-slate-600 border border-slate-300 rounded-lg bg-white hover:bg-slate-100"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditing(false)}
+                      className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={updateTaskMutation.isPending}
+                      className="px-4 py-2 text-sm font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                    >
+                      {updateTaskMutation.isPending
+                        ? "Saving..."
+                        : "Save changes"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                /* Description */
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900 mb-2">
+                    Description
+                  </h3>
+                  <p className="text-sm text-slate-700 bg-slate-50 p-4 rounded-lg whitespace-pre-wrap">
+                    {task.description || "No description provided."}
+                  </p>
+                </div>
+              )}
 
               {/* Subtasks */}
               <div>

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
@@ -15,11 +16,22 @@ type NotificationController struct {
 	Repo *repositories.NotificationRepo
 }
 
+// List returns the newest notifications. ?limit=10 (default 10, max 100).
+// The response also carries totalCount and unreadCount, so the bell badge is
+// correct even when only some notifications are loaded.
 func (n *NotificationController) List(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
 	userID, _ := primitive.ObjectIDFromHex(c.GetString("userId"))
 
-	notifications, err := n.Repo.ListByUser(c.Request.Context(), orgID, userID)
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "10"), 10, 64)
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	notifications, total, unread, err := n.Repo.ListByUser(c.Request.Context(), orgID, userID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -28,7 +40,12 @@ func (n *NotificationController) List(c *gin.Context) {
 	if notifications == nil {
 		notifications = []models.Notification{}
 	}
-	c.JSON(http.StatusOK, notifications)
+	c.JSON(http.StatusOK, gin.H{
+		"notifications": notifications,
+		"totalCount":    total,
+		"unreadCount":   unread,
+		"hasMore":       int64(len(notifications)) < total,
+	})
 }
 
 func (n *NotificationController) MarkAsRead(c *gin.Context) {

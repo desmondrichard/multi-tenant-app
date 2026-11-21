@@ -3,6 +3,7 @@ package controllers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourname/multi-tenant-pm/models"
@@ -47,15 +48,52 @@ func (p *ProjectController) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, proj)
 }
 
+// List returns the workspace's projects.
+//   - without ?page  -> a plain array of ALL projects (used by dropdowns / name lookups)
+//   - with ?page&limit -> {projects, totalCount, page, limit} (used by the Projects page)
 func (p *ProjectController) List(c *gin.Context) {
 	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
+	ctx := c.Request.Context()
 
-	projects, err := p.Repo.List(c.Request.Context(), orgID)
+	if c.Query("page") == "" {
+		projects, err := p.Repo.List(ctx, orgID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if projects == nil {
+			projects = []models.Project{}
+		}
+		c.JSON(http.StatusOK, projects)
+		return
+	}
+
+	page, _ := strconv.ParseInt(c.Query("page"), 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "9"), 10, 64)
+	if limit < 1 {
+		limit = 9
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	projects, total, err := p.Repo.ListPaged(ctx, orgID, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, projects)
+	if projects == nil {
+		projects = []models.Project{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"projects":   projects,
+		"totalCount": total,
+		"page":       page,
+		"limit":      limit,
+	})
 }
 
 // Delete soft-deletes a project and its tasks: hidden from the app, kept in the database

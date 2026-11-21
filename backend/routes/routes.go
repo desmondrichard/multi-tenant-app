@@ -33,6 +33,7 @@ func Setup(r *gin.Engine) {
 	// Tasks
 	taskCtrl := &controllers.TaskController{
 		Repo:             taskRepo,
+		UserRepo:         userRepo,
 		ActivityRepo:     activityRepo,
 		NotificationRepo: notificationRepo,
 	}
@@ -117,6 +118,7 @@ func Setup(r *gin.Engine) {
 			{
 				tasks.GET("", taskCtrl.ListByProject)
 				tasks.GET("/:taskId", taskCtrl.Get)
+				tasks.PATCH("/:taskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Update)
 				tasks.POST("", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Create)
 				tasks.PATCH("/:taskId/status", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.UpdateStatus)
 				tasks.DELETE("/:taskId", middleware.RequireRole("owner", "admin", "manager", "member"), taskCtrl.Delete)

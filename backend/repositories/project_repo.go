@@ -72,3 +72,29 @@ func (r *ProjectRepo) SoftDelete(ctx context.Context, orgID, projectID, userID p
 	)
 	return err
 }
+
+// ListPaged returns one page of projects (newest first) plus the total count
+func (r *ProjectRepo) ListPaged(ctx context.Context, orgID primitive.ObjectID, page, limit int64) ([]models.Project, int64, error) {
+	filter := bson.M{"organizationId": orgID, "deletedAt": nil}
+
+	total, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+		SetSkip((page - 1) * limit).
+		SetLimit(limit)
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var projects []models.Project
+	if err := cursor.All(ctx, &projects); err != nil {
+		return nil, 0, err
+	}
+	return projects, total, nil
+}

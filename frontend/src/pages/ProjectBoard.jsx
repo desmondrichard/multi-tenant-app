@@ -156,8 +156,7 @@ export default function ProjectBoard() {
 
   // Soft delete a task (hidden, but kept in the database)
   const deleteTaskMutation = useMutation({
-    mutationFn: (taskId) =>
-      api.delete(`/projects/${projectId}/tasks/${taskId}`),
+    mutationFn: (taskId) => api.delete(`/projects/${projectId}/tasks/${taskId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["analytics"] });
@@ -335,7 +334,7 @@ export default function ProjectBoard() {
           return (
             <div
               key={col.id}
-              className="w-80 shrink-0 min-h-0 flex flex-col bg-slate-100 rounded-xl p-4"
+              className="w-72 sm:w-80 shrink-0 min-h-0 flex flex-col bg-slate-100 rounded-xl p-4"
             >
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-semibold text-slate-700">
@@ -368,9 +367,7 @@ export default function ProjectBoard() {
                           title="Delete task"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (
-                              window.confirm(`Delete task "${task.title}"?`)
-                            ) {
+                            if (window.confirm(`Delete task "${task.title}"?`)) {
                               deleteTaskMutation.mutate(task.id);
                             }
                           }}
@@ -652,9 +649,8 @@ export default function ProjectBoard() {
                 rows={4}
               />
               <p className="text-xs text-slate-400 -mt-2 mb-4">
-                Tip: mention a name to assign it, a date like
-                &quot;tomorrow&quot; or &quot;next Friday&quot;, a priority, or
-                list your own steps for subtasks.
+                Tip: mention a name to assign it, a date like &quot;tomorrow&quot; or
+                &quot;next Friday&quot;, a priority, or list your own steps for subtasks.
               </p>
 
               <div className="flex justify-end gap-3">
@@ -670,9 +666,7 @@ export default function ProjectBoard() {
                   disabled={aiMutation.isPending || !aiPrompt.trim()}
                   className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
                 >
-                  {aiMutation.isPending
-                    ? "Analyzing prompt (5-15 sec)..."
-                    : "Create Task"}
+                  {aiMutation.isPending ? "Analyzing prompt (5-15 sec)..." : "Create Task"}
                 </button>
               </div>
             </form>
@@ -683,6 +677,7 @@ export default function ProjectBoard() {
       {/* Task Details Drawer */}
       {selectedTask && (
         <TaskDrawer
+          key={selectedTask.id}
           task={selectedTask}
           projectId={projectId}
           members={members}
