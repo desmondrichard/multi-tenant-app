@@ -26,6 +26,14 @@ func (a *ActivityController) ListByTask(c *gin.Context) {
 		return
 	}
 
+	if task, err := a.TaskRepo.FindByID(c.Request.Context(), orgID, taskID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else if task == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
 	activities, err := a.Repo.ListByTask(c.Request.Context(), orgID, taskID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

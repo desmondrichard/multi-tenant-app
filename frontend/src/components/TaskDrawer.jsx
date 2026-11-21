@@ -44,7 +44,8 @@ export default function TaskDrawer({ task, projectId, members, onClose }) {
       setContent("");
       toast.success("Comment added!");
     },
-    onError: () => toast.error("Failed to add comment"),
+    onError: (err) =>
+      toast.error(err.response?.data?.error || "Failed to add comment"),
   });
 
   // Add Subtask Mutation (Optimistic)

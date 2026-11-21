@@ -272,3 +272,18 @@ func (r *TaskRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID, limi
 	}
 	return tasks, total, nil
 }
+
+// UnassignUser removes a user as assignee from ALL tasks of the workspace.
+// Called when the user is removed from the workspace, so no task stays
+// assigned to someone who can no longer see it.
+// Returns how many tasks were changed.
+func (r *TaskRepo) UnassignUser(ctx context.Context, orgID, userID primitive.ObjectID) (int64, error) {
+	res, err := r.coll().UpdateMany(ctx,
+		bson.M{"organizationId": orgID, "assigneeId": userID},
+		bson.M{"$unset": bson.M{"assigneeId": ""}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.ModifiedCount, nil
+}

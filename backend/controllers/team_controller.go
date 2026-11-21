@@ -24,6 +24,7 @@ import (
 type TeamController struct {
 	UserRepo *repositories.UserRepo
 	InvRepo  *repositories.InvitationRepo
+	TaskRepo *repositories.TaskRepo
 }
 
 // TeamMemberDTO is a flattened view of a user for ONE workspace,
@@ -319,6 +320,11 @@ func (t *TeamController) RemoveUser(c *gin.Context) {
 	if err := t.UserRepo.RemoveMembership(c.Request.Context(), orgID, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Their tasks must not stay assigned to someone who can no longer see them
+	if n, err := t.TaskRepo.UnassignUser(c.Request.Context(), orgID, userID); err == nil && n > 0 {
+		ws.Publish(ws.Event{Type: "TASKS_UPDATED", OrgID: orgID.Hex()})
 	}
 
 	// Log the removed user out IMMEDIATELY in every open tab / browser.

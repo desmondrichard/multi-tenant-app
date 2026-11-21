@@ -28,6 +28,17 @@ func (c *CommentController) Create(ctx *gin.Context) {
 		return
 	}
 
+	// The task must exist in this workspace and must not be deleted
+	task, err := c.TaskRepo.FindByID(ctx.Request.Context(), orgID, taskID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if task == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
 	var in struct {
 		Content string `json:"content" validate:"required,min=1"`
 	}
@@ -75,8 +86,7 @@ func (c *CommentController) Create(ctx *gin.Context) {
 	})
 
 	// 2. Send Notification to Assignee
-	task, _ := c.TaskRepo.FindByID(ctx.Request.Context(), orgID, taskID)
-	if task != nil && !task.AssigneeID.IsZero() && task.AssigneeID != userID {
+	if !task.AssigneeID.IsZero() && task.AssigneeID != userID {
 		pushNotification(ctx.Request.Context(), c.NotificationRepo, &models.Notification{
 			OrganizationID: orgID,
 			UserID:         task.AssigneeID,
@@ -105,6 +115,14 @@ func (c *CommentController) ListByTask(ctx *gin.Context) {
 
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
+		return
+	}
+
+	if task, err := c.TaskRepo.FindByID(ctx.Request.Context(), orgID, taskID); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else if task == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
 

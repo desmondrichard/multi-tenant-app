@@ -62,6 +62,7 @@ func Setup(r *gin.Engine) {
 	teamCtrl := &controllers.TeamController{
 		UserRepo: userRepo,
 		InvRepo:  &repositories.InvitationRepo{},
+		TaskRepo: taskRepo,
 	}
 
 	// AI
