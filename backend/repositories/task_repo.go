@@ -248,3 +248,27 @@ func (r *TaskRepo) FindByIDs(ctx context.Context, orgID primitive.ObjectID, ids 
 	}
 	return tasks, nil
 }
+
+// ListByOrg returns the newest tasks of the whole workspace (not deleted) plus the total count.
+// Used by the AI chat helper to know about every project's tasks.
+func (r *TaskRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID, limit int64) ([]models.Task, int64, error) {
+	filter := bson.M{"organizationId": orgID, "deletedAt": nil}
+
+	total, err := r.coll().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(limit)
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var tasks []models.Task
+	if err := cursor.All(ctx, &tasks); err != nil {
+		return nil, 0, err
+	}
+	return tasks, total, nil
+}

@@ -18,6 +18,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { timeAgo, useMinuteTick } from "../lib/activity";
+import AIChatbot from "./AIChatbot";
 
 export default function Layout() {
   const { user } = useSelector((state) => state.auth);
@@ -225,7 +226,7 @@ export default function Layout() {
               >
                 <Bell className="w-5 h-5" />
                 {unreadCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full border-2 border-white flex items-center justify-center">
+                  <span className="absolute -top-0.5 -right-0.5 min-w-4.5 h-4.5 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full border-2 border-white flex items-center justify-center">
                     {unreadCount > 9 ? "9+" : unreadCount}
                   </span>
                 )}
@@ -308,6 +309,9 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Workspace AI chat helper (bottom-right) */}
+      <AIChatbot />
     </div>
   );
 }

@@ -30,10 +30,6 @@ type AITaskRequest struct {
 	ProjectID string `json:"projectId"`
 }
 
-type AIAskRequest struct {
-	Question string `json:"question"`
-}
-
 // AISubtask is one subtask suggested by the AI
 type AISubtask struct {
 	Title       string `json:"title"`
@@ -195,6 +191,7 @@ User request: %q`, now.Format("2006-01-02"), now.Weekday(), strings.Join(memberL
 	}
 
 	// 4. Parse the AI response
+	aiResponse = extractJSON(aiResponse)
 	var parsed AITaskResponse
 	if err := json.Unmarshal([]byte(aiResponse), &parsed); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI returned an invalid format. Please try again."})
@@ -289,80 +286,6 @@ User request: %q`, now.Format("2006-01-02"), now.Weekday(), strings.Join(memberL
 
 	c.JSON(http.StatusOK, task)
 }
-
-// AskAI answers questions based on workspace data
-func (a *AIController) AskAI(c *gin.Context) {
-	var in AIAskRequest
-	if err := c.ShouldBindJSON(&in); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	orgID, _ := primitive.ObjectIDFromHex(c.GetString("orgId"))
-
-	// 1. Fetch Projects, Tasks, and Users for context
-	projects, _ := a.ProjectRepo.List(c.Request.Context(), orgID)
-	tasksResult, _, _ := a.TaskRepo.ListByProject(c.Request.Context(), orgID, primitive.NilObjectID, "", "", "", "", 1, 100)
-	users, _ := a.UserRepo.ListByOrg(c.Request.Context(), orgID)
-
-	// 2. Build Context String
-	contextStr := "--- WORKSPACE DATA ---\n"
-	contextStr += "PROJECTS:\n"
-	for _, p := range projects {
-		contextStr += fmt.Sprintf("- %s (Key: %s): %s\n", p.Name, p.Key, p.Description)
-	}
-
-	contextStr += "\nTEAM MEMBERS:\n"
-	for _, u := range users {
-		// Fix: Find the role from the memberships array for the current org
-		role := "member"
-		for _, m := range u.Memberships {
-			if m.OrganizationID == orgID {
-				role = m.Role
-				break
-			}
-		}
-		contextStr += fmt.Sprintf("- %s (%s)\n", u.Name, role)
-	}
-
-	contextStr += "\nTASKS:\n"
-	if tasksResult != nil {
-		for _, t := range tasksResult {
-			assigneeName := "Unassigned"
-			for _, u := range users {
-				if u.ID == t.AssigneeID {
-					assigneeName = u.Name
-					break
-				}
-			}
-			contextStr += fmt.Sprintf("- [%s] %s | Status: %s | Priority: %s | Assignee: %s\n", t.ID.Hex(), t.Title, t.Status, t.Priority, assigneeName)
-		}
-	}
-
-	// 3. Build Prompt
-	prompt := fmt.Sprintf(`
-		You are a helpful AI assistant for a project management app.
-		Here is the current data of the workspace:
-		%s
-		
-		User Question: "%s"
-		
-		Answer the user's question based ONLY on the data provided above. Be concise and professional. If the answer is not in the data, say "I don't have that information in the workspace."
-	`, contextStr, in.Question)
-
-	// 4. Call Gemini
-	answer, err := callGeminiWithSDK(prompt)
-	if err != nil {
-		fmt.Println("❌ AI error:", err)
-		status, msg := aiErrorMessage(err)
-		c.JSON(status, gin.H{"error": msg})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"answer": answer})
-}
-
-// --- Gemini API Helper ---
 
 func callGeminiWithSDK(prompt string) (string, error) {
 	return callGemini(prompt, nil)
@@ -468,7 +391,7 @@ func callGemini(prompt string, cfg *genai.GenerateContentConfig) (string, error)
 				resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
 				text := resp.Candidates[0].Content.Parts[0].Text
 				fmt.Printf("✅ Success with model: %s\n", modelName)
-				return extractJSON(text), nil
+				return text, nil
 			}
 
 			if err == nil {
