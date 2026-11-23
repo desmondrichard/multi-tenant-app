@@ -46,4 +46,20 @@ func ConnectMongo() {
 	} else {
 		log.Println("✅ Unique index on organization slug verified")
 	}
+
+	// One PENDING invitation per email per organization (race-proof).
+	// Accepted invitations are ignored by the index, so a removed person can be invited again later.
+	_, err = Database.Collection("invitations").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "organizationId", Value: 1}, {Key: "email", Value: 1}},
+		Options: options.Index().
+			SetUnique(true).
+			SetName("uniq_pending_invite_per_org_email").
+			SetPartialFilterExpression(bson.M{"status": "pending"}),
+	})
+	if err != nil {
+		log.Println("⚠️ Could not create the pending-invite unique index (old duplicate pending invitations exist?). "+
+			"The app still blocks duplicates in code. Cancel the old duplicate pending invitations, then restart:", err)
+	} else {
+		log.Println("✅ Unique index on pending invitations verified")
+	}
 }

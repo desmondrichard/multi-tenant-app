@@ -19,6 +19,7 @@ import (
 	ws "github.com/yourname/multi-tenant-pm/websocket"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type TeamController struct {
@@ -79,12 +80,37 @@ func (t *TeamController) Invite(c *gin.Context) {
 		return
 	}
 
-	// 1. Generate Token
+	ctx := c.Request.Context()
+
+	// 0. The email service must be configured BEFORE we save anything
+	apiKey := os.Getenv("BREVO_API_KEY")
+	if apiKey == "" {
+		fmt.Println("❌ BREVO_API_KEY is missing in .env")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Email service not configured"})
+		return
+	}
+
+	// 1. Duplicate checks, ONLY inside THIS workspace.
+	//    The same email may still be invited to (or own) other workspaces.
+	if existing, _ := t.UserRepo.FindByEmailAnyCase(ctx, in.Email); existing != nil {
+		for _, m := range existing.Memberships {
+			if m.OrganizationID == orgID {
+				c.JSON(http.StatusConflict, gin.H{"error": "This person is already a member of this workspace"})
+				return
+			}
+		}
+	}
+	if pending, _ := t.InvRepo.FindPending(ctx, orgID, in.Email); pending != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "An invitation for this email is already pending in this workspace"})
+		return
+	}
+
+	// 2. Generate Token
 	b := make([]byte, 16)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
 
-	// 2. Save Invitation to DB
+	// 3. Save Invitation to DB
 	inv := &models.Invitation{
 		OrganizationID: orgID,
 		Email:          in.Email,
@@ -92,18 +118,17 @@ func (t *TeamController) Invite(c *gin.Context) {
 		Token:          token,
 	}
 
-	if err := t.InvRepo.Create(c.Request.Context(), inv); err != nil {
+	if err := t.InvRepo.Create(ctx, inv); err != nil {
+		// two admins inviting the same email at the same moment: the unique index stops the second one
+		if mongo.IsDuplicateKeyError(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "An invitation for this email is already pending in this workspace"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 3. Send Email via Brevo HTTP API
-	apiKey := os.Getenv("BREVO_API_KEY")
-	if apiKey == "" {
-		fmt.Println("❌ BREVO_API_KEY is missing in .env")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Email service not configured"})
-		return
-	}
+	// 4. Send Email via Brevo HTTP API
 
 	frontendURL := os.Getenv("CLIENT_ORIGIN")
 	if frontendURL == "" {
@@ -142,7 +167,8 @@ func (t *TeamController) Invite(c *gin.Context) {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("❌ Failed to reach Brevo API:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
+		t.InvRepo.Delete(ctx, inv.ID) // don't leave a pending invite that would block a retry
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "The invitation email could not be sent. Please try again."})
 		return
 	}
 	defer resp.Body.Close()
@@ -150,7 +176,8 @@ func (t *TeamController) Invite(c *gin.Context) {
 	if resp.StatusCode != 201 && resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Println("❌ Brevo API Error:", string(body))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invite created, but email failed to send."})
+		t.InvRepo.Delete(ctx, inv.ID) // don't leave a pending invite that would block a retry
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "The invitation email could not be sent. Please try again."})
 		return
 	}
 
@@ -186,16 +213,19 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 	if existingUser != nil {
 		// User exists! We need to check if they are ALREADY in this workspace
 		isAlreadyMember := false
+		currentRole := inv.Role
 		for _, m := range existingUser.Memberships {
 			if m.OrganizationID == inv.OrganizationID {
 				isAlreadyMember = true
+				currentRole = m.Role // keep their REAL role (e.g. owner), not the invitation's
 				break
 			}
 		}
 
 		if isAlreadyMember {
-			// They are already in this workspace, just log them in
-			token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
+			// They are already in this workspace: close the invitation and just log them in
+			t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
+			token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, currentRole)
 			c.JSON(http.StatusOK, gin.H{"token": token, "user": existingUser})
 			return
 		}

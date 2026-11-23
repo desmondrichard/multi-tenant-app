@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type UserRepo struct{}
@@ -117,4 +118,15 @@ func (r *UserRepo) AddOwnerMembership(ctx context.Context, userID primitive.Obje
 		return false, err
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// FindByEmailAnyCase finds a user ignoring upper/lower case (old accounts may have mixed-case emails)
+func (r *UserRepo) FindByEmailAnyCase(ctx context.Context, email string) (*models.User, error) {
+	var u models.User
+	opts := options.FindOne().SetCollation(&options.Collation{Locale: "en", Strength: 2})
+	err := r.coll().FindOne(ctx, bson.M{"email": email}, opts).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	return &u, err
 }
