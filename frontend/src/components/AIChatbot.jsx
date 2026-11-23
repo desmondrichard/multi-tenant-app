@@ -110,7 +110,7 @@ export default function AIChatbot() {
     <div className="fixed bottom-6 right-6 z-50">
       {/* Chat Window */}
       {isOpen && (
-        <div className="bg-white w-96 max-w-[calc(100vw-3rem)] h-[32rem] max-h-[75vh] rounded-xl shadow-2xl border border-slate-200 flex flex-col mb-4">
+        <div className="bg-white w-96 max-w-[calc(100vw-3rem)] h-128 max-h-[75vh] rounded-xl shadow-2xl border border-slate-200 flex flex-col mb-4">
           <div className="bg-brand-600 text-white p-4 rounded-t-xl flex justify-between items-center">
             <h3 className="font-bold flex items-center gap-2">
               <Sparkles className="w-4 h-4" /> Workspace Assistant

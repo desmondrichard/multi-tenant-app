@@ -89,88 +89,90 @@ export default function Team() {
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-        <table className="w-full min-w-[34rem] text-left border-collapse">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
-              <th className="p-4 font-medium">Name</th>
-              <th className="p-4 font-medium">Email</th>
-              <th className="p-4 font-medium">Role</th>
-              <th className="p-4 font-medium text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {members?.map((member) => (
-              <tr
-                key={member.id}
-                className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
-              >
-                <td className="p-4 flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-sm">
-                    {member.name.charAt(0)}
-                  </div>
-                  <span className="font-medium text-slate-900">
-                    {member.name}
-                  </span>
-                </td>
-                <td className="p-4 text-slate-600">{member.email}</td>
-                <td className="p-4">
-                  {canManage &&
-                  member.role !== "owner" &&
-                  member.id !== user?.id ? (
-                    <select
-                      value={member.role || "member"}
-                      onChange={(e) =>
-                        updateRoleMutation.mutate({
-                          userId: member.id,
-                          role: e.target.value,
-                        })
-                      }
-                      className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500 ${
-                        member.role === "admin"
-                          ? "bg-purple-100 text-purple-800"
-                          : "bg-slate-100 text-slate-800 hover:border-slate-300"
-                      }`}
-                    >
-                      <option value="admin">Admin</option>
-                      <option value="member">Member</option>
-                    </select>
-                  ) : (
-                    // Owner (or yourself / no permission): plain badge, no dropdown
-                    <span
-                      className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize ${
-                        member.role === "owner"
-                          ? "bg-amber-100 text-amber-800"
-                          : member.role === "admin"
-                            ? "bg-purple-100 text-purple-800"
-                            : "bg-slate-100 text-slate-800"
-                      }`}
-                    >
-                      {member.role || "member"}
-                    </span>
-                  )}
-                </td>
-                <td className="p-4 text-right">
-                  {canManage && member.role !== "owner" && member.id !== user?.id && (
-                    <button
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Are you sure you want to remove ${member.name}?`,
-                          )
-                        ) {
-                          removeUserMutation.mutate(member.id);
-                        }
-                      }}
-                      className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </td>
+          <table className="w-full min-w-136 text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
+                <th className="p-4 font-medium">Name</th>
+                <th className="p-4 font-medium">Email</th>
+                <th className="p-4 font-medium">Role</th>
+                <th className="p-4 font-medium text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {members?.map((member) => (
+                <tr
+                  key={member.id}
+                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
+                >
+                  <td className="p-4 flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center font-bold text-sm">
+                      {member.name.charAt(0)}
+                    </div>
+                    <span className="font-medium text-slate-900">
+                      {member.name}
+                    </span>
+                  </td>
+                  <td className="p-4 text-slate-600">{member.email}</td>
+                  <td className="p-4">
+                    {canManage &&
+                    member.role !== "owner" &&
+                    member.id !== user?.id ? (
+                      <select
+                        value={member.role || "member"}
+                        onChange={(e) =>
+                          updateRoleMutation.mutate({
+                            userId: member.id,
+                            role: e.target.value,
+                          })
+                        }
+                        className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize border border-transparent focus:outline-none focus:ring-2 focus:ring-brand-500 ${
+                          member.role === "admin"
+                            ? "bg-purple-100 text-purple-800"
+                            : "bg-slate-100 text-slate-800 hover:border-slate-300"
+                        }`}
+                      >
+                        <option value="admin">Admin</option>
+                        <option value="member">Member</option>
+                      </select>
+                    ) : (
+                      // Owner (or yourself / no permission): plain badge, no dropdown
+                      <span
+                        className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium capitalize ${
+                          member.role === "owner"
+                            ? "bg-amber-100 text-amber-800"
+                            : member.role === "admin"
+                              ? "bg-purple-100 text-purple-800"
+                              : "bg-slate-100 text-slate-800"
+                        }`}
+                      >
+                        {member.role || "member"}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-4 text-right">
+                    {canManage &&
+                      member.role !== "owner" &&
+                      member.id !== user?.id && (
+                        <button
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Are you sure you want to remove ${member.name}?`,
+                              )
+                            ) {
+                              removeUserMutation.mutate(member.id);
+                            }
+                          }}
+                          className="text-xs font-medium text-red-600 hover:text-red-700 px-3 py-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                        >
+                          Remove
+                        </button>
+                      )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -68,7 +68,7 @@ export default function MyTasks() {
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[36rem] text-left border-collapse">
+            <table className="w-full min-w-xl text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-sm text-slate-600">
                   <th className="p-4 font-medium">Task</th>
