@@ -73,6 +73,7 @@ func Setup(r *gin.Engine) {
 		ProjectRepo:      projectRepo,
 		ActivityRepo:     activityRepo,
 		NotificationRepo: notificationRepo,
+		CommentRepo:      &repositories.CommentRepo{},
 	}
 
 	// Workspace (NEW)
@@ -175,6 +176,11 @@ func Setup(r *gin.Engine) {
 			// AI
 			protected.POST("/ai/generate-task", middleware.RequireRole("owner", "admin", "manager", "member"), aiCtrl.GenerateTask)
 			protected.POST("/ai/ask", aiCtrl.AskAI)
+
+			// AI summaries: one task, one project, the whole workspace (weekly digest)
+			protected.POST("/ai/summarize/task/:taskId", middleware.RequireRole("owner", "admin", "manager", "member"), aiCtrl.SummarizeTask)
+			protected.POST("/ai/summarize/project/:projectId", middleware.RequireRole("owner", "admin", "manager", "member"), aiCtrl.SummarizeProject)
+			protected.POST("/ai/summarize/workspace", middleware.RequireRole("owner", "admin", "manager", "member"), aiCtrl.SummarizeWorkspace)
 		}
 	}
 }

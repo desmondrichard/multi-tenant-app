@@ -55,3 +55,25 @@ func (r *CommentRepo) ListByTask(ctx context.Context, orgID, taskID primitive.Ob
 	}
 	return comments, nil
 }
+
+// ListAllForTask returns the newest `limit` comments of a task, INCLUDING subtask comments,
+// in chronological order (oldest first). Used for AI summaries.
+func (r *CommentRepo) ListAllForTask(ctx context.Context, orgID, taskID primitive.ObjectID, limit int64) ([]models.Comment, error) {
+	filter := bson.M{"organizationId": orgID, "taskId": taskID}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(limit)
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var comments []models.Comment
+	if err := cursor.All(ctx, &comments); err != nil {
+		return nil, err
+	}
+	// newest-first -> oldest-first
+	for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
+		comments[i], comments[j] = comments[j], comments[i]
+	}
+	return comments, nil
+}

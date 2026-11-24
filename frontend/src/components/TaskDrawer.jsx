@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { toast } from "sonner";
 import { X, Send, User, Clock, Trash2, Pencil } from "lucide-react";
 import SubtaskItem from "./SubtaskItem";
+import AISummaryPanel from "./AISummaryPanel";
 
 const ZERO_ID = "000000000000000000000000"; // how the API shows "no assignee"
 
@@ -198,6 +199,7 @@ export default function TaskDrawer({
     { id: "details", label: "Details" },
     { id: "comments", label: "Comments", count: comments?.length || 0 },
     { id: "activity", label: "Activity" },
+    { id: "summary", label: "✨ Summary" },
   ];
 
   return (
@@ -206,7 +208,7 @@ export default function TaskDrawer({
         {/* Header */}
         <div className="p-4 sm:p-6 border-b border-slate-200 flex justify-between items-start gap-2">
           <div className="min-w-0">
-            <h2 className="text-xl font-bold text-slate-900 wrap-break-word">
+            <h2 className="text-xl font-bold text-slate-900 break-words">
               {task.title}
             </h2>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3 text-sm text-slate-500">
@@ -522,6 +524,16 @@ export default function TaskDrawer({
                 })
               )}
             </div>
+          )}
+
+          {/* ---------- AI SUMMARY TAB ---------- */}
+          {activeTab === "summary" && (
+            <AISummaryPanel
+              scope="task"
+              id={task.id}
+              emptyHint="Get a short status of this task: what is done, what is pending and what is blocked."
+              buttonLabel="Summarize this task"
+            />
           )}
 
           {/* ---------- ACTIVITY TAB ---------- */}

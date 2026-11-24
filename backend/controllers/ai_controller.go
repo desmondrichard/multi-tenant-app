@@ -23,6 +23,7 @@ type AIController struct {
 	ProjectRepo      *repositories.ProjectRepo
 	ActivityRepo     *repositories.ActivityRepo
 	NotificationRepo *repositories.NotificationRepo
+	CommentRepo      *repositories.CommentRepo
 }
 
 type AITaskRequest struct {

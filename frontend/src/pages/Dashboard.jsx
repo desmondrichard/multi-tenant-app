@@ -10,6 +10,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import ActivityIcon from "../components/ActivityIcon";
+import AISummaryPanel from "../components/AISummaryPanel";
 import {
   describeActivity,
   timeAgo,
@@ -231,7 +232,10 @@ export default function Dashboard() {
                 );
                 return (
                   <div key={activity.id} className="relative pl-6">
-                    <ActivityIcon type={type} className="absolute -left-3 top-1" />
+                    <ActivityIcon
+                      type={type}
+                      className="absolute -left-3 top-1"
+                    />
                     {link ? (
                       <Link to={link} className="block hover:opacity-80">
                         {content}
@@ -245,6 +249,22 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* AI weekly digest */}
+      <div className="mt-6 bg-white p-6 rounded-2xl soft-shadow border border-slate-100 relative z-10">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <span className="w-2 h-5 bg-purple-500 rounded-full inline-block"></span>{" "}
+            AI Weekly Digest
+          </h3>
+          <span className="text-xs text-slate-400">Last 7 days</span>
+        </div>
+        <AISummaryPanel
+          scope="workspace"
+          emptyHint="See what happened in your workspace this week: what was completed, who contributed, and what is overdue."
+          buttonLabel="Generate weekly digest"
+        />
       </div>
     </div>
   );

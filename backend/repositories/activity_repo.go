@@ -82,3 +82,40 @@ func (r *ActivityRepo) ListByOrg(ctx context.Context, orgID primitive.ObjectID, 
 	}
 	return activities, total, nil
 }
+
+// ListByTaskIDs returns the newest activities of ANY of the given tasks (used for project summaries)
+func (r *ActivityRepo) ListByTaskIDs(ctx context.Context, orgID primitive.ObjectID, taskIDs []primitive.ObjectID, limit int64) ([]models.Activity, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	filter := bson.M{"organizationId": orgID, "taskId": bson.M{"$in": taskIDs}}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(limit)
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var activities []models.Activity
+	if err := cursor.All(ctx, &activities); err != nil {
+		return nil, err
+	}
+	return activities, nil
+}
+
+// ListSince returns the workspace activities created after `since` (newest first)
+func (r *ActivityRepo) ListSince(ctx context.Context, orgID primitive.ObjectID, since time.Time, limit int64) ([]models.Activity, error) {
+	filter := bson.M{"organizationId": orgID, "createdAt": bson.M{"$gte": since}}
+	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}}).SetLimit(limit)
+	cursor, err := r.coll().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var activities []models.Activity
+	if err := cursor.All(ctx, &activities); err != nil {
+		return nil, err
+	}
+	return activities, nil
+}

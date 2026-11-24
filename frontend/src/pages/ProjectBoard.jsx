@@ -21,6 +21,7 @@ import {
   Trash2,
 } from "lucide-react";
 import TaskDrawer from "../components/TaskDrawer";
+import AISummaryPanel from "../components/AISummaryPanel";
 
 const COLUMNS = [
   { id: "todo", title: "To Do" },
@@ -48,6 +49,7 @@ export default function ProjectBoard() {
 
   // AI Modal States
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
 
   // Search, Filter, Pagination States
@@ -247,6 +249,13 @@ export default function ProjectBoard() {
             className="flex items-center gap-2 bg-white text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-50 transition-colors disabled:opacity-50"
           >
             <Trash2 className="w-4 h-4" /> Delete Project
+          </button>
+
+          <button
+            onClick={() => setIsSummaryOpen(true)}
+            className="flex items-center gap-2 bg-white text-purple-700 border border-purple-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-50 transition-colors"
+          >
+            <Sparkles className="w-4 h-4" /> Summary
           </button>
 
           <button
@@ -614,6 +623,32 @@ export default function ProjectBoard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* AI Project Summary Modal */}
+      {isSummaryOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-xl max-h-[85vh] overflow-y-auto p-6">
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-600" /> Project Summary
+              </h2>
+              <button
+                onClick={() => setIsSummaryOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-xl leading-none"
+                aria-label="Close"
+              >
+                &times;
+              </button>
+            </div>
+            <AISummaryPanel
+              scope="project"
+              id={projectId}
+              emptyHint="Get the progress of this project: overdue tasks, who has what, and recent changes."
+              buttonLabel="Summarize this project"
+            />
           </div>
         </div>
       )}
