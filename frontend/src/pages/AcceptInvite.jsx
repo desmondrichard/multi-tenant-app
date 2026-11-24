@@ -18,7 +18,7 @@ export default function AcceptInvite() {
     setIsLoading(true);
     try {
       const res = await api.post("/invites/accept", { ...formData, token });
-      dispatch(setCredentials({ user: res.data.user, token: res.data.token }));
+      dispatch(setCredentials({ token: res.data.token }));
       toast.success("Welcome to the team!");
       navigate("/dashboard");
     } catch (error) {

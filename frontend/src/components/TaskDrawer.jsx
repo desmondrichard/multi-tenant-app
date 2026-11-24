@@ -206,7 +206,7 @@ export default function TaskDrawer({
         {/* Header */}
         <div className="p-4 sm:p-6 border-b border-slate-200 flex justify-between items-start gap-2">
           <div className="min-w-0">
-            <h2 className="text-xl font-bold text-slate-900 break-words">
+            <h2 className="text-xl font-bold text-slate-900 wrap-break-word">
               {task.title}
             </h2>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3 text-sm text-slate-500">

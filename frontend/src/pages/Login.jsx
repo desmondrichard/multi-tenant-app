@@ -48,12 +48,8 @@ export default function Login() {
       const response = await api.post("/auth/login", data);
 
       // Save to Redux
-      dispatch(
-        setCredentials({
-          user: response.data.user,
-          token: response.data.token,
-        }),
-      );
+      // Only the token is stored; the profile is loaded from /me
+      dispatch(setCredentials({ token: response.data.token }));
 
       toast.success("Logged in successfully");
       navigate("/dashboard");

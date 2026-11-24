@@ -226,7 +226,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 			// They are already in this workspace: close the invitation and just log them in
 			t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
 			token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, currentRole)
-			c.JSON(http.StatusOK, gin.H{"token": token, "user": existingUser})
+			c.JSON(http.StatusOK, gin.H{"token": token})
 			return
 		}
 
@@ -242,7 +242,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 		t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
 
 		token, _ := utils.GenerateToken(existingUser.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
-		c.JSON(http.StatusOK, gin.H{"token": token, "user": existingUser})
+		c.JSON(http.StatusOK, gin.H{"token": token})
 		return
 	}
 
@@ -269,7 +269,7 @@ func (t *TeamController) AcceptInvite(c *gin.Context) {
 	t.InvRepo.MarkAccepted(c.Request.Context(), inv.ID)
 	token, _ := utils.GenerateToken(user.ID.Hex(), inv.OrganizationID.Hex(), org.Name, inv.Role)
 
-	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+	c.JSON(http.StatusOK, gin.H{"token": token})
 }
 
 // UpdateRole updates a user's role (Promote/Demote)

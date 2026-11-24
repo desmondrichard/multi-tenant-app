@@ -40,12 +40,7 @@ export default function Register() {
     try {
       const response = await api.post("/auth/register", data);
 
-      dispatch(
-        setCredentials({
-          user: response.data.user,
-          token: response.data.token,
-        }),
-      );
+      dispatch(setCredentials({ token: response.data.token }));
 
       toast.success("Organization created successfully");
       navigate("/dashboard");
